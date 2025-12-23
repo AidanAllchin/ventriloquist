@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Simplified iMessage logger that logs messages to an SQLite database
+iMessage logger that logs messages to an SQLite database
 
-File: deploy-to-mac/simple_imessage_logger.py
+File: collection/imessage_logger.py
 Author: Aidan Allchin
 Created: 2025-10-02
 Last Modified: 2025-12-23
@@ -14,7 +14,6 @@ import asyncio
 import aiosqlite
 import logging
 import fcntl
-import json
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -30,12 +29,21 @@ from rich.progress import (
     MofNCompleteColumn
 )
 
-from id_normalization import normalize_identifier
-from models import (
+from ..database import (
+    init_local_database,
+    get_last_synced_timestamp,
+    sync_batch_to_local_db,
+    fetch_existing_group_chat_statistics,
+    fetch_existing_statistics,
+    upsert_statistics,
+    upsert_group_chat_statistics,
+)
+from .id_normalization import normalize_identifier
+from ..models import (
     MessageRecord,
     MessageStatsRecord,
     GroupChatStatsRecord,
-    ParticipantActivityStatsRecord
+    ParticipantActivityStatsRecord,
 )
 
 # Load environment variables
@@ -57,8 +65,6 @@ log = logging.getLogger(__name__)
 
 # Configuration
 IMESSAGE_DB_PATH = os.path.expanduser("~/Library/Messages/chat.db")
-DATA_DIR = Path(__file__).parent.parent.parent / "data"
-LOCAL_DB_PATH = DATA_DIR / "messages.db"
 LOCK_FILE = Path(__file__).parent / "logs" / "imessage_logger.lock"
 BATCH_SIZE = 500  # Number of messages to insert per batch
 
@@ -66,92 +72,8 @@ BATCH_SIZE = 500  # Number of messages to insert per batch
 console = Console()
 
 
-async def init_local_database(db_path: Path) -> None:
-    """Initialize the local SQLite database with required tables."""
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    async with aiosqlite.connect(db_path) as conn:
-        # Messages table
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS messages_text_messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                message_id INTEGER NOT NULL,
-                guid TEXT NOT NULL,
-                text TEXT,
-                timestamp TEXT NOT NULL,
-                sender_id TEXT,
-                recipient_id TEXT,
-                is_from_me INTEGER NOT NULL,
-                service TEXT NOT NULL,
-                chat_identifier TEXT,
-                is_group_chat INTEGER NOT NULL DEFAULT 0,
-                group_chat_name TEXT,
-                group_chat_participants TEXT,  -- JSON array
-                has_attachments INTEGER NOT NULL DEFAULT 0,
-                is_read INTEGER NOT NULL DEFAULT 0,
-                read_timestamp TEXT,
-                delivered_timestamp TEXT,
-                reply_to_guid TEXT,
-                thread_originator_guid TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(guid)
-            )
-        """)
-
-        # Message stats table
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS messages_message_stats (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                identifier TEXT NOT NULL,
-                individual_from_me INTEGER NOT NULL DEFAULT 0,
-                individual_to_me INTEGER NOT NULL DEFAULT 0,
-                group_from_me INTEGER NOT NULL DEFAULT 0,
-                group_to_me INTEGER NOT NULL DEFAULT 0,
-                total_individual INTEGER NOT NULL DEFAULT 0,
-                total_group INTEGER NOT NULL DEFAULT 0,
-                total_messages INTEGER NOT NULL DEFAULT 0,
-                group_chat_names TEXT,  -- JSON array
-                last_message_timestamp TEXT,
-                last_message_text TEXT,
-                is_last_from_me INTEGER,
-                is_awaiting_response INTEGER NOT NULL DEFAULT 0,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(identifier)
-            )
-        """)
-
-        # Group chat stats table
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS messages_group_chat_stats (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                group_chat_id TEXT NOT NULL,
-                participant_identifiers TEXT,  -- JSON array
-                group_chat_name TEXT NOT NULL,
-                chat_identifiers_seen TEXT,  -- JSON array
-                messages_from_me INTEGER NOT NULL DEFAULT 0,
-                messages_to_me INTEGER NOT NULL DEFAULT 0,
-                total_messages INTEGER NOT NULL DEFAULT 0,
-                last_message_timestamp TEXT,
-                last_message_text TEXT,
-                last_message_sender TEXT,
-                is_last_from_me INTEGER,
-                participant_stats TEXT,  -- JSON object
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(group_chat_id)
-            )
-        """)
-
-        # Create indexes for faster queries
-        await conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages_text_messages(timestamp)")
-        await conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_identifier ON messages_text_messages(chat_identifier)")
-
-        await conn.commit()
-        log.info(f"Local database initialized at {db_path}")
-
-
 class iMessageLogger:
-    def __init__(self, local_db_path: Path):
-        self.local_db_path = local_db_path
+    def __init__(self):
         self.user_identifiers = []  # Will be populated with user's phone/email
 
     def _imessage_timestamp_to_datetime(self, timestamp: int) -> Optional[datetime]:
@@ -211,22 +133,6 @@ class iMessageLogger:
             # This is expected for messages with only attachments
             log.debug(f"Could not extract text from attributedBody (likely attachment-only message)")
             return ""
-
-    async def _get_last_synced_timestamp(self) -> tuple[Optional[datetime], Optional[str]]:
-        """Get the timestamp and guid of the last synced message from local database"""
-        try:
-            async with aiosqlite.connect(self.local_db_path) as conn:
-                async with conn.execute(
-                    """SELECT timestamp, guid FROM messages_text_messages
-                       ORDER BY timestamp DESC LIMIT 1""",
-                ) as cursor:
-                    row = await cursor.fetchone()
-                    if row:
-                        return datetime.fromisoformat(row[0]), row[1]
-            return None, None
-        except Exception as e:
-            log.error(f"Error getting last synced timestamp: {e}")
-            return None, None
 
     async def _get_user_identifiers(self) -> List[str]:
         """
@@ -572,55 +478,6 @@ class iMessageLogger:
 
         return result
 
-    async def _fetch_existing_statistics(self, identifiers: List[str]) -> Dict[str, MessageStatsRecord]:
-        """
-        Fetch existing statistics from the local database for given identifiers.
-
-        Args:
-            identifiers: List of identifiers to fetch stats for
-
-        Returns:
-            Dictionary mapping identifier to MessageStatsRecord (empty dict if no stats found)
-        """
-        if not identifiers:
-            return {}
-
-        try:
-            result = {}
-            async with aiosqlite.connect(self.local_db_path) as conn:
-                placeholders = ",".join("?" * len(identifiers))
-                query = f"""SELECT * FROM messages_message_stats
-                           WHERE identifier IN ({placeholders})"""
-                async with conn.execute(query, identifiers) as cursor:
-                    columns = [description[0] for description in cursor.description]
-                    async for row in cursor:
-                        row_dict = dict(zip(columns, row))
-                        identifier = row_dict.get("identifier")
-                        if not identifier:
-                            continue
-
-                        # Parse JSON fields
-                        if row_dict.get("group_chat_names"):
-                            row_dict["group_chat_names"] = json.loads(row_dict["group_chat_names"])
-                        else:
-                            row_dict["group_chat_names"] = []
-
-                        # Parse datetime
-                        if row_dict.get("last_message_timestamp"):
-                            row_dict["last_message_timestamp"] = datetime.fromisoformat(row_dict["last_message_timestamp"])
-
-                        # Convert boolean fields
-                        row_dict["is_awaiting_response"] = bool(row_dict.get("is_awaiting_response", 0))
-                        if row_dict.get("is_last_from_me") is not None:
-                            row_dict["is_last_from_me"] = bool(row_dict["is_last_from_me"])
-
-                        result[identifier] = MessageStatsRecord(**row_dict)
-
-            return result
-        except Exception as e:
-            log.error(f"Error fetching existing statistics: {e}")
-            return {}
-
     def _merge_statistics(
             self,
             existing: Optional[MessageStatsRecord],
@@ -674,65 +531,6 @@ class iMessageLogger:
         }
 
         return MessageStatsRecord(**merged_data)
-
-    async def _upsert_statistics(self, stats: Dict[str, MessageStatsRecord]) -> int:
-        """
-        Upsert message statistics to the local database.
-
-        Args:
-            stats: Dictionary mapping identifier to MessageStatsRecord
-
-        Returns:
-            Number of statistics successfully upserted
-        """
-        if not stats:
-            return 0
-
-        try:
-            async with aiosqlite.connect(self.local_db_path) as conn:
-                for identifier, stat in stats.items():
-                    await conn.execute("""
-                        INSERT INTO messages_message_stats (
-                            identifier, individual_from_me, individual_to_me,
-                            group_from_me, group_to_me, total_individual, total_group,
-                            total_messages, group_chat_names, last_message_timestamp,
-                            last_message_text, is_last_from_me, is_awaiting_response, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(identifier) DO UPDATE SET
-                            individual_from_me = excluded.individual_from_me,
-                            individual_to_me = excluded.individual_to_me,
-                            group_from_me = excluded.group_from_me,
-                            group_to_me = excluded.group_to_me,
-                            total_individual = excluded.total_individual,
-                            total_group = excluded.total_group,
-                            total_messages = excluded.total_messages,
-                            group_chat_names = excluded.group_chat_names,
-                            last_message_timestamp = excluded.last_message_timestamp,
-                            last_message_text = excluded.last_message_text,
-                            is_last_from_me = excluded.is_last_from_me,
-                            is_awaiting_response = excluded.is_awaiting_response,
-                            updated_at = excluded.updated_at
-                    """, (
-                        stat.identifier,
-                        stat.individual_from_me,
-                        stat.individual_to_me,
-                        stat.group_from_me,
-                        stat.group_to_me,
-                        stat.total_individual,
-                        stat.total_group,
-                        stat.total_messages,
-                        json.dumps(stat.group_chat_names),
-                        stat.last_message_timestamp.isoformat() if stat.last_message_timestamp else None,
-                        stat.last_message_text,
-                        1 if stat.is_last_from_me else 0 if stat.is_last_from_me is not None else None,
-                        1 if stat.is_awaiting_response else 0,
-                        datetime.now(timezone.utc).isoformat()
-                    ))
-                await conn.commit()
-            return len(stats)
-        except Exception as e:
-            log.error(f"Error upserting statistics: {e}")
-            return 0
 
     def _compute_group_chat_statistics_from_messages(
             self,
@@ -869,56 +667,6 @@ class iMessageLogger:
 
         return result
 
-    async def _fetch_existing_group_chat_statistics(self, group_chat_ids: List[str]) -> Dict[str, GroupChatStatsRecord]:
-        """
-        Fetch existing group chat statistics from the local database for given group_chat_ids.
-
-        Args:
-            group_chat_ids: List of group_chat_ids to fetch stats for
-
-        Returns:
-            Dictionary mapping group_chat_id to GroupChatStatsRecord (empty dict if no stats found)
-        """
-        if not group_chat_ids:
-            return {}
-
-        try:
-            result = {}
-            async with aiosqlite.connect(self.local_db_path) as conn:
-                placeholders = ",".join("?" * len(group_chat_ids))
-                query = f"""SELECT * FROM messages_group_chat_stats
-                           WHERE group_chat_id IN ({placeholders})"""
-                async with conn.execute(query, group_chat_ids) as cursor:
-                    columns = [description[0] for description in cursor.description]
-                    async for row in cursor:
-                        row_dict = dict(zip(columns, row))
-                        group_chat_id = row_dict.get("group_chat_id")
-                        if not group_chat_id:
-                            continue
-
-                        # Parse JSON fields
-                        if row_dict.get("participant_identifiers"):
-                            row_dict["participant_identifiers"] = json.loads(row_dict["participant_identifiers"])
-                        else:
-                            row_dict["participant_identifiers"] = []
-
-                        if row_dict.get("chat_identifiers_seen"):
-                            row_dict["chat_identifiers_seen"] = json.loads(row_dict["chat_identifiers_seen"])
-                        else:
-                            row_dict["chat_identifiers_seen"] = []
-
-                        if row_dict.get("participant_stats"):
-                            row_dict["participant_stats"] = json.loads(row_dict["participant_stats"])
-                        else:
-                            row_dict["participant_stats"] = {}
-
-                        result[group_chat_id] = GroupChatStatsRecord.from_db_dict(row_dict)
-
-            return result
-        except Exception as e:
-            log.error(f"Error fetching existing group chat statistics: {e}")
-            return {}
-
     def _merge_group_chat_statistics(
             self,
             existing: Optional[GroupChatStatsRecord],
@@ -1048,74 +796,6 @@ class iMessageLogger:
 
         return GroupChatStatsRecord(**merged_data)
 
-    async def _upsert_group_chat_statistics(self, stats: Dict[str, GroupChatStatsRecord]) -> int:
-        """
-        Upsert group chat statistics to the local database.
-
-        Args:
-            stats: Dictionary mapping group_chat_id to GroupChatStatsRecord
-
-        Returns:
-            Number of statistics successfully upserted
-        """
-        if not stats:
-            return 0
-
-        try:
-            async with aiosqlite.connect(self.local_db_path) as conn:
-                for group_chat_id, stat in stats.items():
-                    # Serialize participant_stats
-                    participant_stats_json = {}
-                    for identifier, p_stats in stat.participant_stats.items():
-                        participant_stats_json[identifier] = {
-                            "message_count": p_stats.message_count,
-                            "avg_message_length": p_stats.avg_message_length,
-                            "hourly_distribution_utc": p_stats.hourly_distribution_utc,
-                            "first_message_timestamp": p_stats.first_message_timestamp.isoformat() if p_stats.first_message_timestamp else None,
-                            "last_message_timestamp": p_stats.last_message_timestamp.isoformat() if p_stats.last_message_timestamp else None,
-                        }
-
-                    await conn.execute("""
-                        INSERT INTO messages_group_chat_stats (
-                            group_chat_id, participant_identifiers, group_chat_name,
-                            chat_identifiers_seen, messages_from_me, messages_to_me, total_messages,
-                            last_message_timestamp, last_message_text, last_message_sender,
-                            is_last_from_me, participant_stats, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(group_chat_id) DO UPDATE SET
-                            participant_identifiers = excluded.participant_identifiers,
-                            group_chat_name = excluded.group_chat_name,
-                            chat_identifiers_seen = excluded.chat_identifiers_seen,
-                            messages_from_me = excluded.messages_from_me,
-                            messages_to_me = excluded.messages_to_me,
-                            total_messages = excluded.total_messages,
-                            last_message_timestamp = excluded.last_message_timestamp,
-                            last_message_text = excluded.last_message_text,
-                            last_message_sender = excluded.last_message_sender,
-                            is_last_from_me = excluded.is_last_from_me,
-                            participant_stats = excluded.participant_stats,
-                            updated_at = excluded.updated_at
-                    """, (
-                        stat.group_chat_id,
-                        json.dumps(stat.participant_identifiers),
-                        stat.group_chat_name,
-                        json.dumps(stat.chat_identifiers_seen),
-                        stat.messages_from_me,
-                        stat.messages_to_me,
-                        stat.total_messages,
-                        stat.last_message_timestamp.isoformat() if stat.last_message_timestamp else None,
-                        stat.last_message_text,
-                        stat.last_message_sender,
-                        1 if stat.is_last_from_me else 0 if stat.is_last_from_me is not None else None,
-                        json.dumps(participant_stats_json),
-                        datetime.now(timezone.utc).isoformat()
-                    ))
-                await conn.commit()
-            return len(stats)
-        except Exception as e:
-            log.error(f"Error upserting group chat statistics: {e}")
-            return 0
-
     async def _sync_messages_to_local_db(
             self,
             messages: List[MessageRecord],
@@ -1154,44 +834,7 @@ class iMessageLogger:
                     batch = messages[batch_start:batch_end]
 
                     try:
-                        async with aiosqlite.connect(self.local_db_path) as conn:
-                            for msg in batch:
-                                await conn.execute("""
-                                    INSERT INTO messages_text_messages (
-                                        message_id, guid, text, timestamp, sender_id,
-                                        recipient_id, is_from_me, service, chat_identifier,
-                                        is_group_chat, group_chat_name, group_chat_participants,
-                                        has_attachments, is_read, read_timestamp, delivered_timestamp,
-                                        reply_to_guid, thread_originator_guid
-                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                    ON CONFLICT(guid) DO UPDATE SET
-                                        text = excluded.text,
-                                        is_read = excluded.is_read,
-                                        read_timestamp = excluded.read_timestamp,
-                                        delivered_timestamp = excluded.delivered_timestamp
-                                """, (
-                                    msg.message_id,
-                                    msg.guid,
-                                    msg.text,
-                                    msg.timestamp.isoformat(),
-                                    msg.sender_id,
-                                    msg.recipient_id,
-                                    1 if msg.is_from_me else 0,
-                                    msg.service,
-                                    msg.chat_identifier,
-                                    1 if msg.is_group_chat else 0,
-                                    msg.group_chat_name,
-                                    json.dumps(msg.group_chat_participants) if msg.group_chat_participants else None,
-                                    1 if msg.has_attachments else 0,
-                                    1 if msg.is_read else 0,
-                                    msg.date_read.isoformat() if msg.date_read else None,
-                                    msg.date_delivered.isoformat() if msg.date_delivered else None,
-                                    msg.reply_to_guid,
-                                    msg.thread_originator_guid
-                                ))
-                            await conn.commit()
-
-                        batch_synced = len(batch)
+                        batch_synced = await sync_batch_to_local_db(batch)
                         synced_count += batch_synced
                         progress.update(task, advance=batch_synced)
 
@@ -1200,14 +843,14 @@ class iMessageLogger:
                             batch_stats = self._compute_statistics_from_messages(batch)
                             if batch_stats:
                                 identifiers = list(batch_stats.keys())
-                                existing_stats = await self._fetch_existing_statistics(identifiers)
+                                existing_stats = await fetch_existing_statistics(identifiers)
 
                                 merged_stats = {}
                                 for identifier, batch_stat in batch_stats.items():
                                     existing_stat = existing_stats.get(identifier)
                                     merged_stats[identifier] = self._merge_statistics(existing_stat, batch_stat)
 
-                                await self._upsert_statistics(merged_stats)
+                                await upsert_statistics(merged_stats)
                                 log.debug(f"Upserted statistics for {len(merged_stats)} identifiers")
                         except Exception as stats_error:
                             log.error(f"Failed to compute/upsert message statistics for batch: {stats_error}")
@@ -1217,14 +860,14 @@ class iMessageLogger:
                             batch_group_stats = self._compute_group_chat_statistics_from_messages(batch)
                             if batch_group_stats:
                                 group_chat_ids = list(batch_group_stats.keys())
-                                existing_group_stats = await self._fetch_existing_group_chat_statistics(group_chat_ids)
+                                existing_group_stats = await fetch_existing_group_chat_statistics(group_chat_ids)
 
                                 merged_group_stats = {}
                                 for group_chat_id, batch_stat in batch_group_stats.items():
                                     existing_stat = existing_group_stats.get(group_chat_id)
                                     merged_group_stats[group_chat_id] = self._merge_group_chat_statistics(existing_stat, batch_stat)
 
-                                await self._upsert_group_chat_statistics(merged_group_stats)
+                                await upsert_group_chat_statistics(merged_group_stats)
                                 log.debug(f"Upserted group chat statistics for {len(merged_group_stats)} group chats")
                         except Exception as group_stats_error:
                             log.error(f"Failed to compute/upsert group chat statistics for batch: {group_stats_error}")
@@ -1240,58 +883,21 @@ class iMessageLogger:
                 batch = messages[batch_start:batch_end]
 
                 try:
-                    async with aiosqlite.connect(self.local_db_path) as conn:
-                        for msg in batch:
-                            await conn.execute("""
-                                INSERT INTO messages_text_messages (
-                                    message_id, guid, text, timestamp, sender_id,
-                                    recipient_id, is_from_me, service, chat_identifier,
-                                    is_group_chat, group_chat_name, group_chat_participants,
-                                    has_attachments, is_read, read_timestamp, delivered_timestamp,
-                                    reply_to_guid, thread_originator_guid
-                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                ON CONFLICT(guid) DO UPDATE SET
-                                    text = excluded.text,
-                                    is_read = excluded.is_read,
-                                    read_timestamp = excluded.read_timestamp,
-                                    delivered_timestamp = excluded.delivered_timestamp
-                            """, (
-                                msg.message_id,
-                                msg.guid,
-                                msg.text,
-                                msg.timestamp.isoformat(),
-                                msg.sender_id,
-                                msg.recipient_id,
-                                1 if msg.is_from_me else 0,
-                                msg.service,
-                                msg.chat_identifier,
-                                1 if msg.is_group_chat else 0,
-                                msg.group_chat_name,
-                                json.dumps(msg.group_chat_participants) if msg.group_chat_participants else None,
-                                1 if msg.has_attachments else 0,
-                                1 if msg.is_read else 0,
-                                msg.date_read.isoformat() if msg.date_read else None,
-                                msg.date_delivered.isoformat() if msg.date_delivered else None,
-                                msg.reply_to_guid,
-                                msg.thread_originator_guid
-                            ))
-                        await conn.commit()
-
-                    synced_count += len(batch)
+                    synced_count += await sync_batch_to_local_db(batch)
 
                     # Compute and upsert message statistics for this batch
                     try:
                         batch_stats = self._compute_statistics_from_messages(batch)
                         if batch_stats:
                             identifiers = list(batch_stats.keys())
-                            existing_stats = await self._fetch_existing_statistics(identifiers)
+                            existing_stats = await fetch_existing_statistics(identifiers)
 
                             merged_stats = {}
                             for identifier, batch_stat in batch_stats.items():
                                 existing_stat = existing_stats.get(identifier)
                                 merged_stats[identifier] = self._merge_statistics(existing_stat, batch_stat)
 
-                            await self._upsert_statistics(merged_stats)
+                            await upsert_statistics(merged_stats)
                             log.debug(f"Upserted statistics for {len(merged_stats)} identifiers")
                     except Exception as stats_error:
                         log.error(f"Failed to compute/upsert message statistics for batch: {stats_error}")
@@ -1301,14 +907,14 @@ class iMessageLogger:
                         batch_group_stats = self._compute_group_chat_statistics_from_messages(batch)
                         if batch_group_stats:
                             group_chat_ids = list(batch_group_stats.keys())
-                            existing_group_stats = await self._fetch_existing_group_chat_statistics(group_chat_ids)
+                            existing_group_stats = await fetch_existing_group_chat_statistics(group_chat_ids)
 
                             merged_group_stats = {}
                             for group_chat_id, batch_stat in batch_group_stats.items():
                                 existing_stat = existing_group_stats.get(group_chat_id)
                                 merged_group_stats[group_chat_id] = self._merge_group_chat_statistics(existing_stat, batch_stat)
 
-                            await self._upsert_group_chat_statistics(merged_group_stats)
+                            await upsert_group_chat_statistics(merged_group_stats)
                             log.debug(f"Upserted group chat statistics for {len(merged_group_stats)} group chats")
                     except Exception as group_stats_error:
                         log.error(f"Failed to compute/upsert group chat statistics for batch: {group_stats_error}")
@@ -1329,7 +935,7 @@ class iMessageLogger:
 
         try:
             # Get last synced timestamp and guid
-            last_sync, last_guid = await self._get_last_synced_timestamp()
+            last_sync, last_guid = await get_last_synced_timestamp()
             if last_sync:
                 log.info(f"Last sync: {last_sync}")
             else:
@@ -1416,8 +1022,8 @@ class FileLock:
 
 async def main():
     """Entry point"""
-    # Check for --interactive flag for manual runs
-    interactive = "--interactive" in sys.argv or "-i" in sys.argv
+    # Check for --verbose flag for manual runs
+    verbose = "--verbose" in sys.argv or "-v" in sys.argv
 
     # Check iMessage DB accessibility
     if not os.path.exists(IMESSAGE_DB_PATH):
@@ -1425,7 +1031,7 @@ async def main():
         sys.exit(1)
 
     # Initialize local database
-    await init_local_database(LOCAL_DB_PATH)
+    await init_local_database()
 
     # Acquire lock to prevent concurrent runs
     # This uses LOCK_NB (non-blocking), so if another instance is running,
@@ -1434,10 +1040,10 @@ async def main():
         with FileLock(LOCK_FILE):
             log.info("Lock acquired - starting iMessage sync...")
 
-            imessage_logger = iMessageLogger(LOCAL_DB_PATH)
+            imessage_logger = iMessageLogger()
 
             # Show progress in interactive mode
-            await imessage_logger.run_sync(show_progress=interactive)
+            await imessage_logger.run_sync(show_progress=verbose)
 
             log.info("Sync complete")
 

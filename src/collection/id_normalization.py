@@ -1,7 +1,7 @@
 """
-Standalone phone number and identifier normalization utilities for the on-device deployment.
+Standalone phone number and identifier normalization utilities.
 
-File: deploy-to-mac/phone_normalization.py
+File: collection/id_normalization.py
 Author: Aidan Allchin
 Created: 2025-11-23
 """
