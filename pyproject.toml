@@ -1,0 +1,18 @@
+[tool.uv.workspace]
+members = [
+    "src/deploy-to-mac",
+    "src/preprocessing",
+    "src/training",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "ventriloquist-deploy",
+    "ventriloquist-preprocessing",
+    "ventriloquist-training",
+]
+
+[tool.uv.sources]
+ventriloquist-deploy = { workspace = true }
+ventriloquist-preprocessing = { workspace = true }
+ventriloquist-training = { workspace = true }
