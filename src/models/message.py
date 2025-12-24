@@ -65,6 +65,36 @@ class MessageRecord(BaseModel):
             "thread_originator_guid": self.thread_originator_guid,
         }
 
+    @classmethod
+    def from_db_dict(cls, data: Dict[str, Any]) -> "MessageRecord":
+        """Create MessageRecord instance from database dictionary"""
+        import json
+
+        # Parse timestamp strings
+        if isinstance(data.get("timestamp"), str):
+            data["timestamp"] = datetime.fromisoformat(data["timestamp"])
+
+        if isinstance(data.get("read_timestamp"), str):
+            data["date_read"] = datetime.fromisoformat(data["read_timestamp"])
+        elif "read_timestamp" in data:
+            data["date_read"] = data["read_timestamp"]
+
+        if isinstance(data.get("delivered_timestamp"), str):
+            data["date_delivered"] = datetime.fromisoformat(data["delivered_timestamp"])
+        elif "delivered_timestamp" in data:
+            data["date_delivered"] = data["delivered_timestamp"]
+
+        # Parse JSON string for group_chat_participants
+        if isinstance(data.get("group_chat_participants"), str):
+            data["group_chat_participants"] = json.loads(data["group_chat_participants"])
+
+        # Convert integer booleans to actual booleans
+        for bool_field in ["is_from_me", "is_group_chat", "has_attachments", "is_read"]:
+            if bool_field in data and isinstance(data[bool_field], int):
+                data[bool_field] = bool(data[bool_field])
+
+        return cls(**data)
+
     def to_rich_text(self) -> Text:
         """Format message as Rich Text for display"""
         if self.is_from_me:

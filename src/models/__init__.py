@@ -2,13 +2,17 @@
 Shared data models for the Ventriloquist project.
 """
 
+from .contact import Contact
+from .group_chat import GroupChatStatsRecord, ParticipantActivityStatsRecord
 from .message import MessageRecord
 from .message_stats import MessageStatsRecord
-from .group_chat import GroupChatStatsRecord, ParticipantActivityStatsRecord
+from .training_message import TrainingMessage
 
 __all__ = [
+    "Contact",
+    "GroupChatStatsRecord",
     "MessageRecord",
     "MessageStatsRecord",
-    "GroupChatStatsRecord",
     "ParticipantActivityStatsRecord",
+    "TrainingMessage",
 ]

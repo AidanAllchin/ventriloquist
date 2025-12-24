@@ -102,9 +102,41 @@ async def init_local_database() -> None:
             )
         """)
 
+        # Training messages table (processed messages ready for training)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS training_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT NOT NULL,
+                from_contact TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                content TEXT NOT NULL,
+                is_group_chat INTEGER NOT NULL,
+                chat_members TEXT NOT NULL,  -- JSON array
+                reply_to_text TEXT,
+                thread_originator_guid TEXT
+            )
+        """)
+
+        # Training windows table (rendered conversation windows for training)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS training_windows (
+                window_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT NOT NULL,
+                chat_type TEXT NOT NULL,  -- 'group' or 'dm'
+                chat_name TEXT,           -- display name for groups, NULL for DMs
+                participants TEXT NOT NULL,  -- JSON array
+                transcript TEXT NOT NULL,    -- fully rendered, ready for training
+                message_count INTEGER NOT NULL,
+                session_start TEXT NOT NULL,
+                session_end TEXT NOT NULL
+            )
+        """)
+
         # Create indexes for faster queries
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON text_messages(timestamp)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_identifier ON text_messages(chat_identifier)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_training_msg_chat_ts ON training_messages(chat_id, timestamp)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_window_chat ON training_windows(chat_id)")
 
         await conn.commit()
         log.info(f"Local database initialized at {LOCAL_DB_PATH}")

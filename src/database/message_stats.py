@@ -125,3 +125,53 @@ async def upsert_statistics(stats: Dict[str, MessageStatsRecord]) -> int:
         log.error(f"Error upserting statistics: {e}")
         return 0
 
+
+async def get_top_contacts(n: int = 10, sort_by: str = "total_messages") -> List[MessageStatsRecord]:
+    """
+    Retrieve the top N most frequently messaged contacts.
+
+    Args:
+        n: Number of contacts to retrieve (default: 10)
+        sort_by: Field to sort by - "total_messages", "total_individual", or "total_group" (default: "total_messages")
+
+    Returns:
+        List of MessageStatsRecord ordered by message frequency
+    """
+    valid_sort_fields = {"total_messages", "total_individual", "total_group"}
+    if sort_by not in valid_sort_fields:
+        raise ValueError(f"Invalid sort_by field. Must be one of: {valid_sort_fields}")
+
+    try:
+        result = []
+        async with aiosqlite.connect(LOCAL_DB_PATH) as conn:
+            query = f"""
+                SELECT * FROM message_stats
+                ORDER BY {sort_by} DESC
+                LIMIT ?
+            """
+            async with conn.execute(query, (n,)) as cursor:
+                columns = [description[0] for description in cursor.description]
+                async for row in cursor:
+                    row_dict = dict(zip(columns, row))
+
+                    # Parse JSON fields
+                    if row_dict.get("group_chat_names"):
+                        row_dict["group_chat_names"] = json.loads(row_dict["group_chat_names"])
+                    else:
+                        row_dict["group_chat_names"] = []
+
+                    # Parse datetime
+                    if row_dict.get("last_message_timestamp"):
+                        row_dict["last_message_timestamp"] = datetime.fromisoformat(row_dict["last_message_timestamp"])
+
+                    # Convert boolean fields
+                    row_dict["is_awaiting_response"] = bool(row_dict.get("is_awaiting_response", 0))
+                    if row_dict.get("is_last_from_me") is not None:
+                        row_dict["is_last_from_me"] = bool(row_dict["is_last_from_me"])
+
+                    result.append(MessageStatsRecord(**row_dict))
+
+        return result
+    except Exception as e:
+        log.error(f"Error fetching top contacts: {e}")
+        return []

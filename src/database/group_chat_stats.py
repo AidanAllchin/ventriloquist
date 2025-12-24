@@ -8,7 +8,7 @@ Last Modified: 2025-12-23
 from datetime import datetime, timezone
 import logging
 import json
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 import aiosqlite
 
@@ -136,3 +136,130 @@ async def upsert_group_chat_statistics(stats: Dict[str, GroupChatStatsRecord]) -
     except Exception as e:
         log.error(f"Error upserting group chat statistics: {e}")
         return 0
+
+async def get_top_group_chats(
+    n: int = 10,
+    sort_by: str = "total_messages",
+    normalize: bool = False
+) -> List[GroupChatStatsRecord]:
+    """
+    Retrieve the top N most active group chats.
+
+    Args:
+        n: Number of group chats to retrieve (default: 10)
+        sort_by: Field to sort by - "total_messages", "messages_from_me", or "messages_to_me" (default: "total_messages")
+        normalize: If True, normalize by participant count (messages per participant) (default: False)
+
+    Returns:
+        List of GroupChatStatsRecord ordered by activity
+    """
+    valid_sort_fields = {"total_messages", "messages_from_me", "messages_to_me"}
+    if sort_by not in valid_sort_fields:
+        raise ValueError(f"Invalid sort_by field. Must be one of: {valid_sort_fields}")
+
+    try:
+        result = []
+        async with aiosqlite.connect(LOCAL_DB_PATH) as conn:
+            if normalize:
+                # Normalize by dividing message count by number of participants
+                query = f"""
+                    SELECT *,
+                           CAST({sort_by} AS REAL) /
+                           CAST(json_array_length(participant_identifiers) AS REAL) as normalized_score
+                    FROM group_chat_stats
+                    ORDER BY normalized_score DESC
+                    LIMIT ?
+                """
+            else:
+                query = f"""
+                    SELECT * FROM group_chat_stats
+                    ORDER BY {sort_by} DESC
+                    LIMIT ?
+                """
+            async with conn.execute(query, (n,)) as cursor:
+                columns = [description[0] for description in cursor.description]
+                async for row in cursor:
+                    row_dict = dict(zip(columns, row))
+
+                    # Parse JSON fields
+                    if row_dict.get("participant_identifiers"):
+                        row_dict["participant_identifiers"] = json.loads(row_dict["participant_identifiers"])
+                    else:
+                        row_dict["participant_identifiers"] = []
+
+                    if row_dict.get("chat_identifiers_seen"):
+                        row_dict["chat_identifiers_seen"] = json.loads(row_dict["chat_identifiers_seen"])
+                    else:
+                        row_dict["chat_identifiers_seen"] = []
+
+                    if row_dict.get("participant_stats"):
+                        row_dict["participant_stats"] = json.loads(row_dict["participant_stats"])
+                    else:
+                        row_dict["participant_stats"] = {}
+
+                    result.append(GroupChatStatsRecord.from_db_dict(row_dict))
+
+        return result
+    except Exception as e:
+        log.error(f"Error fetching top group chats: {e}")
+        return []
+
+async def get_group_chats_by_participants(
+    required_identifiers: set[str],
+    exclude_identifiers: Optional[set[str]] = None
+) -> List[GroupChatStatsRecord]:
+    """
+    Get group chats where all participants (excluding excluded identifiers) are in required_identifiers.
+
+    Args:
+        required_identifiers: Set of identifiers that all participants must be in
+        exclude_identifiers: Set of identifiers to exclude from the check (e.g., user's own identifiers)
+
+    Returns:
+        List of GroupChatStatsRecord for qualifying group chats
+    """
+    if exclude_identifiers is None:
+        exclude_identifiers = set()
+
+    try:
+        result = []
+        async with aiosqlite.connect(LOCAL_DB_PATH) as conn:
+            query = "SELECT * FROM group_chat_stats"
+            async with conn.execute(query) as cursor:
+                columns = [description[0] for description in cursor.description]
+                async for row in cursor:
+                    row_dict = dict(zip(columns, row))
+
+                    # Parse participant identifiers
+                    if row_dict.get("participant_identifiers"):
+                        participants = json.loads(row_dict["participant_identifiers"])
+                    else:
+                        participants = []
+
+                    # Check if all non-excluded participants are in required_identifiers
+                    all_match = True
+                    for participant in participants:
+                        if participant not in exclude_identifiers and participant not in required_identifiers:
+                            all_match = False
+                            break
+
+                    if all_match and len(participants) > 1:  # Must have at least 2 people
+                        # Parse other JSON fields
+                        if row_dict.get("chat_identifiers_seen"):
+                            row_dict["chat_identifiers_seen"] = json.loads(row_dict["chat_identifiers_seen"])
+                        else:
+                            row_dict["chat_identifiers_seen"] = []
+
+                        if row_dict.get("participant_stats"):
+                            row_dict["participant_stats"] = json.loads(row_dict["participant_stats"])
+                        else:
+                            row_dict["participant_stats"] = {}
+
+                        row_dict["participant_identifiers"] = participants
+                        result.append(GroupChatStatsRecord.from_db_dict(row_dict))
+
+        log.info(f"Found {len(result)} group chats matching participant criteria")
+        return result
+    except Exception as e:
+        log.error(f"Error fetching group chats by participants: {e}")
+        return []
