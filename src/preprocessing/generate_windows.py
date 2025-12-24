@@ -1,5 +1,8 @@
 """
-Generate training windows from training messages using session-based windowing.
+Generate training windows from training messages using sliding window approach.
+
+Each message becomes the final message of its own training window, with up to
+WINDOW_SIZE previous messages as context.
 
 File: preprocessing/generate_windows.py
 Author: Aidan Allchin
@@ -10,206 +13,85 @@ Last Modified: 2025-12-24
 from datetime import datetime, timedelta
 import json
 import logging
-import os
-from typing import List, Optional
+from typing import List
 
 import aiosqlite
-from dotenv import load_dotenv
 
 from ..database.common import LOCAL_DB_PATH
-from ..models import TrainingMessage
+from ..models import TrainingMessage, compute_delta_bucket
 
 log = logging.getLogger(__name__)
 
-load_dotenv()
-MY_NAME = os.getenv("MY_NAME")
-if not MY_NAME:
-    raise ValueError("MY_NAME not found in .env")
-
-# Session boundary threshold (2 hours)
-SESSION_GAP_THRESHOLD = timedelta(hours=2)
-
-# Maximum messages per window (sanity cap)
-MAX_MESSAGES_PER_WINDOW = 200
-
-# Minimum context messages - keep pulling from previous sessions until we hit this
-MIN_CONTEXT_MESSAGES = 25
-
-# Time gap thresholds for markers (must be >= SESSION_GAP_THRESHOLD)
-TIME_GAP_THRESHOLDS = [
-    (timedelta(weeks=4), "--- long time later ---"),
-    (timedelta(weeks=1), "--- weeks later ---"),
-    (timedelta(days=2), "--- days later ---"),
-    (timedelta(hours=12), "--- next day ---"),
-    (timedelta(hours=2), "--- hours later ---"),
-]
+# Maximum messages per window (including the target message)
+WINDOW_SIZE = 100
 
 
-def get_time_gap_marker(gap: timedelta) -> str:
+def format_window_header(messages: List[TrainingMessage]) -> str:
     """
-    Get the appropriate time gap marker for a given duration.
+    Format the JSON header for a training window.
 
     Args:
-        gap: Time difference between messages
+        messages: Messages in the window (to get metadata)
 
     Returns:
-        Marker string like "--- hours later ---" or empty string if gap is small
-    """
-    for threshold, marker in TIME_GAP_THRESHOLDS:
-        if gap >= threshold:
-            return marker
-    return ""
-
-
-def identify_sessions(messages: List[TrainingMessage]) -> List[List[TrainingMessage]]:
-    """
-    Split messages into sessions based on time gaps.
-
-    A new session starts when there's a gap of SESSION_GAP_THRESHOLD or more
-    between consecutive messages.
-
-    Args:
-        messages: List of TrainingMessage objects, ordered by timestamp
-
-    Returns:
-        List of sessions, where each session is a list of messages
-    """
-    if not messages:
-        return []
-
-    sessions = []
-    current_session = [messages[0]]
-
-    for i in range(1, len(messages)):
-        prev_ts = datetime.fromisoformat(messages[i - 1].timestamp)
-        curr_ts = datetime.fromisoformat(messages[i].timestamp)
-        gap = curr_ts - prev_ts
-
-        if gap >= SESSION_GAP_THRESHOLD:
-            # Start a new session
-            sessions.append(current_session)
-            current_session = [messages[i]]
-        else:
-            current_session.append(messages[i])
-
-    # Don't forget the last session
-    if current_session:
-        sessions.append(current_session)
-
-    return sessions
-
-
-def format_header(messages: List[TrainingMessage]) -> str:
-    """
-    Format the conversation header.
-
-    Args:
-        messages: Messages in the conversation (to get metadata)
-
-    Returns:
-        Formatted header string
+        JSON string: {"type": "dm"|"group", "members": [...], "start": "YYYY-MM-DD"}
     """
     if not messages:
         return ""
 
     first_msg = messages[0]
-    participants = ", ".join(first_msg.chat_members)
+    chat_type = "group" if first_msg.is_group_chat else "dm"
+    members = sorted(first_msg.chat_members)
+    start_date = datetime.fromisoformat(first_msg.timestamp).strftime("%Y-%m-%d")
 
-    if first_msg.is_group_chat:
-        # For group chats, we don't have a display name in TrainingMessage
-        # Use "Group" as placeholder - could be enhanced later
-        return f"Group | {participants}"
-    else:
-        return f"DM | {participants}"
+    return json.dumps(
+        {"type": chat_type, "members": members, "start": start_date},
+        ensure_ascii=False,
+    )
 
 
-def format_message(msg: TrainingMessage) -> str:
+def render_window(messages: List[TrainingMessage]) -> str:
     """
-    Format a single message for the transcript.
+    Render a training window as header + JSON message lines.
 
     Args:
-        msg: TrainingMessage to format
+        messages: List of TrainingMessage objects in chronological order
 
     Returns:
-        Formatted message string
+        Full window transcript with header and message lines
     """
-    if msg.reply_to_text:
-        return f'{msg.from_contact}: [replying to "{msg.reply_to_text}"] {msg.content}'
-    else:
-        return f"{msg.from_contact}: {msg.content}"
+    if not messages:
+        return ""
 
+    lines = [format_window_header(messages)]
 
-def render_transcript(
-    current_session: List[TrainingMessage],
-    context_sessions: Optional[List[List[TrainingMessage]]] = None,
-) -> str:
-    """
-    Render a full transcript from messages with time gap markers between sessions.
+    # First message always gets "<1m" delta
+    lines.append(messages[0].to_window_json("<1m"))
 
-    Args:
-        current_session: Current session messages
-        context_sessions: Optional list of previous sessions for context (ordered chronologically)
+    # Subsequent messages get computed deltas
+    for i in range(1, len(messages)):
+        prev_ts = datetime.fromisoformat(messages[i - 1].timestamp)
+        curr_ts = datetime.fromisoformat(messages[i].timestamp)
+        delta = curr_ts - prev_ts
 
-    Returns:
-        Fully rendered transcript string
-    """
-    if not current_session and not context_sessions:
-        raise ValueError("No messages or context sessions provided")
+        # Handle negative deltas (shouldn't happen, but be safe)
+        if delta < timedelta(0):
+            delta = timedelta(0)
 
-    # Get header from first available message
-    if context_sessions and context_sessions[0]:
-        header = format_header(context_sessions[0])
-    else:
-        header = format_header(current_session)
-
-    lines = [header, "---"]
-
-    # Track the last message timestamp for gap calculation
-    last_msg_ts: Optional[datetime] = None
-
-    # Add context from previous sessions with time markers between them
-    if context_sessions:
-        for session in context_sessions:
-            if not session:
-                continue
-
-            # Add time gap marker if there's a previous session
-            if last_msg_ts is not None:
-                first_ts = datetime.fromisoformat(session[0].timestamp)
-                gap = first_ts - last_msg_ts
-                marker = get_time_gap_marker(gap)
-                if marker:
-                    lines.append(marker)
-
-            # Add messages from this session
-            for msg in session:
-                lines.append(format_message(msg))
-
-            # Update last message timestamp
-            last_msg_ts = datetime.fromisoformat(session[-1].timestamp)
-
-    # Add time marker before current session if we have context
-    if last_msg_ts is not None and current_session:
-        first_ts = datetime.fromisoformat(current_session[0].timestamp)
-        gap = first_ts - last_msg_ts
-        marker = get_time_gap_marker(gap)
-        if marker:
-            lines.append(marker)
-
-    # Add current session messages
-    for msg in current_session:
-        lines.append(format_message(msg))
+        bucket = compute_delta_bucket(delta)
+        lines.append(messages[i].to_window_json(bucket))
 
     return "\n".join(lines)
 
 
-def generate_windows_from_messages(chat_id: str, messages: List[TrainingMessage]) -> List[dict]:
+def generate_windows_from_messages(
+    chat_id: str, messages: List[TrainingMessage]
+) -> List[dict]:
     """
-    Generate training windows from a list of messages.
+    Generate sliding training windows from a list of messages.
 
-    Uses minimum context guarantee: each window will have at least MIN_CONTEXT_MESSAGES
-    total messages (current session + context from previous sessions), unless the
-    conversation doesn't have that many messages yet.
+    Each message becomes the final message of its own window, with up to
+    WINDOW_SIZE-1 previous messages as context.
 
     Args:
         chat_id: The chat identifier
@@ -222,83 +104,44 @@ def generate_windows_from_messages(chat_id: str, messages: List[TrainingMessage]
         return []
 
     windows = []
-
-    # Get metadata
     first_msg = messages[0]
     chat_type = "group" if first_msg.is_group_chat else "dm"
-    participants = first_msg.chat_members
+    participants = sorted(first_msg.chat_members)
 
-    # Split into sessions
-    sessions = identify_sessions(messages)
+    # Generate a window for each message
+    for i, target_msg in enumerate(messages):
+        # Get context: up to WINDOW_SIZE messages ending with target
+        start_idx = max(0, i - WINDOW_SIZE + 1)
+        window_messages = messages[start_idx : i + 1]
 
-    # Track all previous sessions for context building
-    previous_sessions: List[List[TrainingMessage]] = []
+        # Render the window
+        transcript = render_window(window_messages)
 
-    # Generate a window for each session
-    for session in sessions:
-        # Cap session size
-        if len(session) > MAX_MESSAGES_PER_WINDOW:
-            session = session[-MAX_MESSAGES_PER_WINDOW:]
+        # Get timestamps for metadata
+        window_start = datetime.fromisoformat(window_messages[0].timestamp)
+        window_end = datetime.fromisoformat(target_msg.timestamp)
 
-        # Build context from previous sessions to meet minimum
-        # Keep as list of sessions to preserve boundaries for time gap markers
-        context_sessions: List[List[TrainingMessage]] = []
-        context_message_count = 0
-        messages_needed = max(0, MIN_CONTEXT_MESSAGES - len(session))
-
-        if messages_needed > 0 and previous_sessions:
-            # Pull from previous sessions (most recent first) until we have enough
-            for prev_session in reversed(previous_sessions):
-                if context_message_count >= messages_needed:
-                    break
-                # How many more do we need?
-                still_needed = messages_needed - context_message_count
-                # Take from the end of this previous session
-                to_take = min(still_needed, len(prev_session))
-                context_sessions.insert(0, prev_session[-to_take:])
-                context_message_count += to_take
-
-        # Cap total window size
-        total_messages = context_message_count + len(session)
-        if total_messages > MAX_MESSAGES_PER_WINDOW:
-            # Trim context from the oldest sessions first
-            excess = total_messages - MAX_MESSAGES_PER_WINDOW
-            while excess > 0 and context_sessions:
-                oldest_session = context_sessions[0]
-                if len(oldest_session) <= excess:
-                    # Remove entire oldest session
-                    excess -= len(oldest_session)
-                    context_sessions.pop(0)
-                else:
-                    # Trim the oldest session
-                    context_sessions[0] = oldest_session[excess:]
-                    excess = 0
-
-        # Render transcript
-        transcript = render_transcript(session, context_sessions if context_sessions else None)
-
-        # Create window record
         window = {
             "chat_id": chat_id,
             "chat_type": chat_type,
-            "chat_name": None,  # Could be enhanced to include group name
+            "chat_name": None,
             "participants": json.dumps(participants),
             "transcript": transcript,
-            "message_count": len(session),
-            "session_start": session[0].timestamp,
-            "session_end": session[-1].timestamp,
+            "message_count": len(window_messages),
+            "session_start": window_start.isoformat(),
+            "session_end": window_end.isoformat(),
         }
         windows.append(window)
-
-        # Add this session to previous sessions for future windows
-        previous_sessions.append(session)
 
     return windows
 
 
 async def generate_all_training_windows() -> int:
     """
-    Generate training windows for all chats and store in database.
+    Generate training windows for all conversations and store in database.
+
+    Groups messages by participant set (not chat_id) since the same group
+    of people may have multiple chat IDs over time.
 
     Returns:
         Total number of windows generated
@@ -309,25 +152,25 @@ async def generate_all_training_windows() -> int:
         # Clear existing windows
         await conn.execute("DELETE FROM training_windows")
 
-        # Get all unique chat IDs
+        # Get all unique participant sets (same people = same conversation)
         async with conn.execute(
-            "SELECT DISTINCT chat_id FROM training_messages"
+            "SELECT DISTINCT chat_members FROM training_messages"
         ) as cursor:
-            chat_ids = [row[0] async for row in cursor]
+            participant_sets = [row[0] async for row in cursor]
 
-        log.info(f"Generating windows for {len(chat_ids)} conversations...")
+        log.info(f"Generating windows for {len(participant_sets)} unique conversations...")
 
-        for i, chat_id in enumerate(chat_ids):
-            # Get all messages for this chat
+        for i, members_json in enumerate(participant_sets):
+            # Get all messages for this participant set, across all chat IDs
             async with conn.execute(
                 """
                 SELECT chat_id, from_contact, timestamp, content,
                        is_group_chat, chat_members, reply_to_text, thread_originator_guid
                 FROM training_messages
-                WHERE chat_id = ?
+                WHERE chat_members = ?
                 ORDER BY timestamp
                 """,
-                (chat_id,),
+                (members_json,),
             ) as cursor:
                 messages = []
                 async for row in cursor:
@@ -344,8 +187,8 @@ async def generate_all_training_windows() -> int:
                         )
                     )
 
-            # Generate windows for this chat
-            windows = generate_windows_from_messages(chat_id, messages)
+            # Use participant set as the conversation identifier
+            windows = generate_windows_from_messages(members_json, messages)
 
             for window in windows:
                 await conn.execute(
@@ -370,7 +213,7 @@ async def generate_all_training_windows() -> int:
             total_windows += len(windows)
 
             if (i + 1) % 20 == 0:
-                log.info(f"  Processed {i + 1}/{len(chat_ids)} chats...")
+                log.info(f"  Processed {i + 1}/{len(participant_sets)} conversations...")
 
         await conn.commit()
 
@@ -382,7 +225,7 @@ async def export_windows_to_jsonl(output_path: str = "data/training_windows.json
     """
     Export training windows to JSONL file.
 
-    Each line contains: {"window_id": int, "transcript": str}
+    Each line contains: {"text": "<full transcript>"}
 
     Args:
         output_path: Path to output file
@@ -395,10 +238,10 @@ async def export_windows_to_jsonl(output_path: str = "data/training_windows.json
     async with aiosqlite.connect(LOCAL_DB_PATH) as conn:
         with open(output_path, "w") as f:
             async with conn.execute(
-                "SELECT window_id, transcript FROM training_windows"
+                "SELECT transcript FROM training_windows"
             ) as cursor:
                 async for row in cursor:
-                    json.dump({"window_id": row[0], "transcript": row[1]}, f)
+                    json.dump({"text": row[0]}, f, ensure_ascii=False)
                     f.write("\n")
                     count += 1
 

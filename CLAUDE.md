@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Ventriloquist is a personality modeling system that fine-tunes LLMs on iMessage conversations. The goal is to train a completion model that predicts what specific people would say, capturing their tone, humor, and conversational patterns.
 
-**Key insight**: This is a completion model (not instruct-tuned). Identity is conditioned via the training format (`Name: message`), not prompt engineering.
+**Key insight**: This is a completion model (not instruct-tuned). Identity is conditioned via JSON structure (`{"name": "...", ...}`), with field names acting as pseudo-special-tokens.
 
 ## Commands
 
@@ -44,27 +44,31 @@ Export → training_windows.jsonl
 
 - **`src/collection/`**: Extracts messages from macOS iMessage database with async batch processing
 - **`src/database/`**: SQLite operations via aiosqlite. Key tables: `text_messages`, `training_messages`, `training_windows`
-- **`src/preprocessing/`**: Transforms raw messages into training format with session-based windowing
+- **`src/preprocessing/`**: Transforms raw messages into training format with sliding window generation
 - **`src/models/`**: Pydantic models for type-safe data handling
 - **`src/training/`**: LoRA training code
 
 ### Key Constants
 
-- `SESSION_GAP_THRESHOLD = 2 hours` - Time gap that starts a new conversation session
-- `MIN_CONTEXT_MESSAGES = 25` - Minimum messages per training window (pulls from previous sessions)
-- `MAX_MESSAGES_PER_WINDOW = 200` - Sanity cap on window size
+- `WINDOW_SIZE = 100` - Fixed sliding window size (each message gets its own window with up to 99 context messages)
 
 ### Training Data Format
 
-```
-DM | Aidan Allchin, Contact Name
----
-Aidan Allchin: hey how are you
-Contact Name: doing well, you?
-Aidan Allchin: [replying to "doing well, you?"] great thanks!
+**Header (one per window):**
+```json
+{"type": "dm", "members": ["Aidan Allchin", "Contact Name"], "start": "2024-03-15"}
 ```
 
-Group chats use `Group | participant1, participant2, ...` header.
+**Messages (one JSON per line):**
+```json
+{"name": "Aidan Allchin", "delta": "<1m", "content": "hey how are you"}
+{"name": "Contact Name", "delta": "<5m", "content": "doing well, you?"}
+{"name": "Aidan Allchin", "delta": "<1h", "content": "[replying to \"doing well, you?\"] great thanks!"}
+```
+
+**Time delta buckets:** `<1m`, `<5m`, `<1h`, `<12h`, `<1d`, `1d+`
+
+Group chats use `"type": "group"` in header.
 
 ### Threading Fields
 
@@ -96,6 +100,7 @@ Three main tables:
 ## Design Decisions
 
 - **Newline splitting**: iMessage stores rapid-fire messages with `\n` separators - these are split into separate TrainingMessages
-- **Completion model**: Single LoRA learns entire social graph; identity via `Name:` prefix
-- **Session windowing**: 2-hour gaps start new sessions; small sessions get context from previous sessions
-- **No timestamps in output**: Sequence encodes order; temporal gaps injected at inference via markers like `--- hours later ---`
+- **Completion model**: Single LoRA learns entire social graph; identity via `"name":` field in JSON
+- **Sliding windows**: Every message gets its own 100-message window (stride 1, maximum overlap)
+- **Per-message time deltas**: Each message carries a `delta` field; model learns response timing as personality trait
+- **JSON as pseudo-special-tokens**: Field names (`"name":`, `"content":`) provide unambiguous boundaries without custom tokenizer
