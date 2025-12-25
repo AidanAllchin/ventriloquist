@@ -19,7 +19,8 @@ class TrainingConfig:
     # Model (use unsloth's optimized version)
     base_model: str = "unsloth/Qwen3-8B-Base"
     max_seq_length: int = 4096
-    load_in_4bit: bool = False  # Full bf16 for quality
+    load_in_4bit: bool = False
+    load_in_8bit: bool = False  # Good middle ground for VRAM vs quality
 
     # LoRA
     lora_r: int = 128
@@ -33,7 +34,7 @@ class TrainingConfig:
 
     # Training
     learning_rate: float = 2e-4
-    batch_size: int = 2
+    batch_size: int = 4
     gradient_accumulation_steps: int = 16
     num_epochs: int = 1
     warmup_ratio: float = 0.03
@@ -44,14 +45,15 @@ class TrainingConfig:
     data_path: Path = field(default_factory=lambda: Path("data/training_windows.jsonl"))
     output_dir: Path = field(default_factory=lambda: Path("checkpoints/ventriloquist"))
     eval_holdout_per_chat: int = 2
+    limit: Optional[int] = None  # Limit windows for testing
 
     # Hardware - Unsloth handles precision automatically
     # use_gradient_checkpointing = "unsloth" for 30% less VRAM
 
     # Logging
     logging_steps: int = 10
-    save_steps: int = 500
-    eval_steps: int = 500
+    save_steps: int = 200
+    eval_steps: int = 200
     report_to: str = "wandb"
     wandb_project: str = "ventriloquist"
     run_name: Optional[str] = None

@@ -45,6 +45,7 @@ def parse_args() -> TrainingConfig:
     parser.add_argument("--base_model", type=str, default=None)
     parser.add_argument("--max_seq_length", type=int, default=None)
     parser.add_argument("--load_in_4bit", action="store_true")
+    parser.add_argument("--load_in_8bit", action="store_true")
 
     # LoRA
     parser.add_argument("--lora_r", type=int, default=None)
@@ -60,6 +61,7 @@ def parse_args() -> TrainingConfig:
     # Data
     parser.add_argument("--data_path", type=str, default=None)
     parser.add_argument("--output_dir", type=str, default=None)
+    parser.add_argument("--limit", type=int, default=None, help="Limit total windows for testing")
 
     # Logging
     parser.add_argument("--run_name", type=str, default=None)
@@ -94,6 +96,7 @@ def load_model_and_tokenizer(config: TrainingConfig):
         max_seq_length=config.max_seq_length,
         dtype=None,  # Auto-detect (bf16 on supported GPUs)
         load_in_4bit=config.load_in_4bit,
+        load_in_8bit=config.load_in_8bit,
     )
 
     # Ensure pad token is set
@@ -149,6 +152,11 @@ def main():
     log.info(f"Loading data from {config.data_path}")
     windows = load_windows(config.data_path)
 
+    # Optional limit for testing
+    if config.limit:
+        log.info(f"Limiting to {config.limit} windows for testing")
+        windows = windows[:config.limit]
+
     train_windows, eval_windows = train_eval_split(
         windows,
         holdout_per_chat=config.eval_holdout_per_chat,
@@ -157,13 +165,14 @@ def main():
     # Create datasets (with caching for faster restarts)
     cache_dir = config.output_dir / "cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_suffix = f"_limit{config.limit}" if config.limit else ""
     train_dataset = create_dataset(
         train_windows, tokenizer, config.max_seq_length,
-        cache_file=str(cache_dir / "train_tokenized.arrow"),
+        cache_file=str(cache_dir / f"train_tokenized{cache_suffix}.arrow"),
     )
     eval_dataset = create_dataset(
         eval_windows, tokenizer, config.max_seq_length,
-        cache_file=str(cache_dir / "eval_tokenized.arrow"),
+        cache_file=str(cache_dir / f"eval_tokenized{cache_suffix}.arrow"),
     )
 
     log.info(f"Train dataset: {len(train_dataset):,} windows")
@@ -193,7 +202,7 @@ def main():
         # Saving
         save_strategy="steps",
         save_steps=config.save_steps,
-        save_total_limit=3,
+        save_total_limit=10,
         # Evaluation
         eval_strategy="steps",
         eval_steps=config.eval_steps,

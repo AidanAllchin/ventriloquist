@@ -88,37 +88,42 @@ def create_dataset(
     """
     texts = [window["text"] for window in windows]
 
-    def tokenize_with_masking(examples):
+    def tokenize_with_masking(examples, indices):
         results = {
             "input_ids": [],
             "attention_mask": [],
             "labels": [],
         }
 
-        for text in examples["text"]:
-            encoding = tokenizer(
-                text,
-                truncation=True,
-                max_length=max_length,
-                padding=False,
-            )
+        for idx, text in zip(indices, examples["text"]):
+            try:
+                encoding = tokenizer(
+                    text,
+                    truncation=True,
+                    max_length=max_length,
+                    padding=False,
+                )
 
-            input_ids = encoding["input_ids"]
-            attention_mask = encoding["attention_mask"]
+                input_ids = encoding["input_ids"]
+                attention_mask = encoding["attention_mask"]
 
-            # Create labels with loss masking
-            last_msg_char_pos = find_last_message_start(text)
-            prefix_text = text[:last_msg_char_pos]
-            prefix_tokens = tokenizer.encode(prefix_text, add_special_tokens=False)
-            mask_until = len(prefix_tokens)
+                # Create labels with loss masking
+                last_msg_char_pos = find_last_message_start(text)
+                prefix_text = text[:last_msg_char_pos]
+                prefix_tokens = tokenizer.encode(prefix_text, add_special_tokens=False)
+                mask_until = len(prefix_tokens)
 
-            labels = input_ids.copy()
-            for i in range(min(mask_until, len(labels))):
-                labels[i] = -100
+                labels = input_ids.copy()
+                for i in range(min(mask_until, len(labels))):
+                    labels[i] = -100
 
-            results["input_ids"].append(input_ids)
-            results["attention_mask"].append(attention_mask)
-            results["labels"].append(labels)
+                results["input_ids"].append(input_ids)
+                results["attention_mask"].append(attention_mask)
+                results["labels"].append(labels)
+            except Exception as e:
+                log.error(f"Failed to tokenize window {idx}: {e}")
+                log.error(f"Text preview: {text[:200]}...")
+                raise
 
         return results
 
@@ -126,6 +131,7 @@ def create_dataset(
     dataset = dataset.map(
         tokenize_with_masking,
         batched=True,
+        with_indices=True,
         remove_columns=["text"],
         cache_file_name=cache_file,
     )
