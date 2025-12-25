@@ -80,3 +80,8 @@ data/*
 *.log
 *.pot
 *.mo
+
+# Training
+wandb/
+unsloth_compiled_cache/
+checkpoints/

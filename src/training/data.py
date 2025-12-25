@@ -11,7 +11,7 @@ import json
 import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from datasets import Dataset
 
@@ -79,6 +79,7 @@ def create_dataset(
     windows: List[Dict],
     tokenizer,
     max_length: int = 4096,
+    cache_file: Optional[str] = None,
 ) -> Dataset:
     """
     Create a HuggingFace Dataset with loss masking.
@@ -126,6 +127,7 @@ def create_dataset(
         tokenize_with_masking,
         batched=True,
         remove_columns=["text"],
+        cache_file_name=cache_file,
     )
 
     return dataset

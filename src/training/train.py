@@ -154,9 +154,17 @@ def main():
         holdout_per_chat=config.eval_holdout_per_chat,
     )
 
-    # Create datasets
-    train_dataset = create_dataset(train_windows, tokenizer, config.max_seq_length)
-    eval_dataset = create_dataset(eval_windows, tokenizer, config.max_seq_length)
+    # Create datasets (with caching for faster restarts)
+    cache_dir = config.output_dir / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    train_dataset = create_dataset(
+        train_windows, tokenizer, config.max_seq_length,
+        cache_file=str(cache_dir / "train_tokenized.arrow"),
+    )
+    eval_dataset = create_dataset(
+        eval_windows, tokenizer, config.max_seq_length,
+        cache_file=str(cache_dir / "eval_tokenized.arrow"),
+    )
 
     log.info(f"Train dataset: {len(train_dataset):,} windows")
     log.info(f"Eval dataset: {len(eval_dataset):,} windows")
