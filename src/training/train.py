@@ -77,6 +77,7 @@ def parse_args() -> TrainingConfig:
     # Logging
     parser.add_argument("--run_name", type=str, default=None)
     parser.add_argument("--no_wandb", action="store_true")
+    parser.add_argument("--resume", action="store_true", help="Resume from latest checkpoint")
 
     args = parser.parse_args()
 
@@ -252,7 +253,7 @@ def main():
     log.info(f"  Steps per epoch: ~{len(train_dataset) // config.effective_batch_size:,}")
     log.info(f"  Learning rate: {config.learning_rate}")
 
-    trainer.train()
+    trainer.train(resume_from_checkpoint=True if config.resume else None)
 
     # Save final model
     final_path = config.output_dir / "final"
