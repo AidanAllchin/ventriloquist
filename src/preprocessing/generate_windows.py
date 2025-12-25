@@ -7,7 +7,7 @@ WINDOW_SIZE previous messages as context.
 File: preprocessing/generate_windows.py
 Author: Aidan Allchin
 Created: 2025-12-24
-Last Modified: 2025-12-24
+Last Modified: 2025-12-25
 """
 
 from datetime import datetime, timedelta
@@ -23,7 +23,7 @@ from ..models import TrainingMessage, compute_delta_bucket
 log = logging.getLogger(__name__)
 
 # Maximum messages per window (including the target message)
-WINDOW_SIZE = 100
+WINDOW_SIZE = 50
 
 
 def format_window_header(messages: List[TrainingMessage]) -> str:

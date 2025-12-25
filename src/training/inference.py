@@ -10,7 +10,7 @@ Usage:
 File: training/inference.py
 Author: Aidan Allchin
 Created: 2025-12-24
-Last Modified: 2025-12-24
+Last Modified: 2025-12-25
 """
 
 import argparse
@@ -385,7 +385,7 @@ def interactive_mode(model, tokenizer):
                 response = generate_response(
                     model,
                     tokenizer,
-                    context[-100:],
+                    context[-50:],
                     target_name,
                     chat_type=chat_type,
                     members=members,

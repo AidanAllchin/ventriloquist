@@ -10,7 +10,7 @@ Usage:
 File: training/train.py
 Author: Aidan Allchin
 Created: 2025-12-24
-Last Modified: 2025-12-24
+Last Modified: 2025-12-25
 """
 
 import argparse
@@ -18,9 +18,20 @@ import logging
 from datetime import datetime
 
 import wandb
-from transformers import TrainingArguments
+from transformers import TrainingArguments, TrainerCallback
 from trl.trainer.sft_trainer import SFTTrainer
 from unsloth import FastLanguageModel
+
+
+class WandbMetricsCallback(TrainerCallback):
+    """Explicitly log metrics to WandB since Unsloth may interfere with default logging."""
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if logs and wandb.run is not None:
+            # Filter out non-numeric values and log to wandb
+            metrics = {k: v for k, v in logs.items() if isinstance(v, (int, float))}
+            if metrics:
+                wandb.log(metrics, step=state.global_step)
 
 from .config import TrainingConfig
 from .data import (
@@ -175,6 +186,9 @@ def main():
         cache_file=str(cache_dir / f"eval_tokenized{cache_suffix}.arrow"),
     )
 
+    # Shuffle training data so we don't train on contacts in sequence
+    train_dataset = train_dataset.shuffle(seed=42)
+
     log.info(f"Train dataset: {len(train_dataset):,} windows")
     log.info(f"Eval dataset: {len(eval_dataset):,} windows")
 
@@ -217,6 +231,10 @@ def main():
     )
 
     # Use SFTTrainer for better compatibility with Unsloth
+    callbacks = []
+    if config.report_to == "wandb":
+        callbacks.append(WandbMetricsCallback())
+
     trainer = SFTTrainer(
         model=model,
         args=training_args,
@@ -224,6 +242,7 @@ def main():
         eval_dataset=eval_dataset,
         data_collator=data_collator,
         processing_class=tokenizer,
+        callbacks=callbacks,
     )
 
     # Train
