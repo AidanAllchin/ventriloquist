@@ -52,6 +52,8 @@ class GeneratedMessage:
 def load_model(
     adapter_path: Path,
     max_seq_length: int = 4096,
+    load_in_8bit: bool = False,
+    load_in_4bit: bool = False,
 ):
     """
     Load trained model with LoRA adapter.
@@ -59,17 +61,24 @@ def load_model(
     Args:
         adapter_path: Path to saved LoRA adapter
         max_seq_length: Maximum sequence length
+        load_in_8bit: Use 8-bit quantization (for lower VRAM)
+        load_in_4bit: Use 4-bit quantization (for even lower VRAM)
 
     Returns:
         (model, tokenizer)
     """
     log.info(f"Loading model from: {adapter_path}")
+    if load_in_8bit:
+        log.info("Using 8-bit quantization")
+    elif load_in_4bit:
+        log.info("Using 4-bit quantization")
 
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=str(adapter_path),
         max_seq_length=max_seq_length,
         dtype=None,
-        load_in_4bit=False,
+        load_in_4bit=load_in_4bit,
+        load_in_8bit=load_in_8bit,
     )
 
     FastLanguageModel.for_inference(model)
@@ -414,9 +423,23 @@ def main():
         default="checkpoints/ventriloquist/final",
         help="Path to trained LoRA adapter",
     )
+    parser.add_argument(
+        "--load_in_8bit",
+        action="store_true",
+        help="Use 8-bit quantization (for 24GB GPUs)",
+    )
+    parser.add_argument(
+        "--load_in_4bit",
+        action="store_true",
+        help="Use 4-bit quantization (for 16GB GPUs)",
+    )
     args = parser.parse_args()
 
-    model, tokenizer = load_model(Path(args.adapter_path))
+    model, tokenizer = load_model(
+        Path(args.adapter_path),
+        load_in_8bit=args.load_in_8bit,
+        load_in_4bit=args.load_in_4bit,
+    )
     interactive_mode(model, tokenizer)
 
 
