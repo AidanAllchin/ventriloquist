@@ -4,7 +4,7 @@ Create training messages from contacts and message database.
 File: preprocessing/make_training_messages.py
 Author: Aidan Allchin
 Created: 2025-12-23
-Last Modified: 2025-12-24
+Last Modified: 2025-12-26
 """
 
 import logging

@@ -550,7 +550,7 @@ def live_chat(adapter_path: Path):
 
             for i, msg_text in enumerate(pending_messages):
                 delta = compute_delta(now, last_ts) if i == 0 else "<1m"
-                prompt += "\n" + format_message(MY_NAME, delta, msg_text)
+                prompt += format_message(MY_NAME, delta, msg_text) + "\n"
 
                 # Add to context as RawMessage
                 context_messages.append(

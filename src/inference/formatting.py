@@ -95,7 +95,8 @@ def messages_to_prompt(
         lines.append(format_message(msg.sender, delta, msg.text))
         prev_timestamp = msg.timestamp
 
-    return "\n".join(lines)
+    # Each line ends with newline (matching training format)
+    return "".join(line + "\n" for line in lines)
 
 
 def append_user_messages(
@@ -108,7 +109,7 @@ def append_user_messages(
     Append user-typed messages to an existing prompt.
 
     Args:
-        prompt: Existing prompt string
+        prompt: Existing prompt string (should already end with newline)
         user_messages: List of message contents from user
         sender_name: Name to use for the user
         last_timestamp: Timestamp of last message in prompt (for delta calculation)
@@ -116,7 +117,7 @@ def append_user_messages(
     Returns:
         Updated prompt with new messages appended
     """
-    lines = [prompt]
+    result = prompt
     now = datetime.now()
 
     for i, content in enumerate(user_messages):
@@ -124,6 +125,6 @@ def append_user_messages(
             delta = compute_delta(now, last_timestamp)
         else:
             delta = "<1m"  # Rapid-fire messages from user
-        lines.append(format_message(sender_name, delta, content))
+        result += format_message(sender_name, delta, content) + "\n"
 
-    return "\n".join(lines)
+    return result
