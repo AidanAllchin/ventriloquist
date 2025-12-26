@@ -1,16 +1,16 @@
 """
-Inference utilities for Ventriloquist.
+Interactive inference for Ventriloquist.
 
 Load trained model and generate message completions interactively.
 
 Usage:
-    >>> python -m src.training.inference
-    >>> python -m src.training.inference --adapter_path checkpoints/my_model
+    >>> python -m src.inference.interactive
+    >>> python -m src.inference.interactive --adapter_path checkpoints/my_model
 
-File: training/inference.py
+File: inference/interactive.py
 Author: Aidan Allchin
 Created: 2025-12-24
-Last Modified: 2025-12-25
+Last Modified: 2025-12-26
 """
 
 import argparse
@@ -28,7 +28,8 @@ from rich.prompt import Prompt
 from rich.table import Table
 from rich import box
 from rich.text import Text
-from unsloth import FastLanguageModel
+
+from .utils import get_device, load_model
 
 console = Console()
 
@@ -47,43 +48,6 @@ class GeneratedMessage:
     delta: str
     content: str
     raw: str  # Original generated text
-
-
-def load_model(
-    adapter_path: Path,
-    max_seq_length: int = 4096,
-    load_in_8bit: bool = False,
-    load_in_4bit: bool = False,
-):
-    """
-    Load trained model with LoRA adapter.
-
-    Args:
-        adapter_path: Path to saved LoRA adapter
-        max_seq_length: Maximum sequence length
-        load_in_8bit: Use 8-bit quantization (for lower VRAM)
-        load_in_4bit: Use 4-bit quantization (for even lower VRAM)
-
-    Returns:
-        (model, tokenizer)
-    """
-    log.info(f"Loading model from: {adapter_path}")
-    if load_in_8bit:
-        log.info("Using 8-bit quantization")
-    elif load_in_4bit:
-        log.info("Using 4-bit quantization")
-
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=str(adapter_path),
-        max_seq_length=max_seq_length,
-        dtype=None,
-        load_in_4bit=load_in_4bit,
-        load_in_8bit=load_in_8bit,
-    )
-
-    FastLanguageModel.for_inference(model)
-
-    return model, tokenizer
 
 
 def build_header(
@@ -260,32 +224,30 @@ def show_interactive_help():
     table.add_column("Command", style="cyan")
     table.add_column("Description", style="dim")
 
+    table.add_row("/sender <name>", "Set your name")
     table.add_row("/target <name>", "Set who to generate for")
-    table.add_row("/members <n1> <n2> ...", "Set conversation members")
+    table.add_row("/members <n1>, <n2>, ...", "Set members (comma-separated)")
     table.add_row("/type <dm|group>", "Set chat type")
     table.add_row("/context", "Show conversation history")
     table.add_row("/clear", "Clear conversation history")
     table.add_row("/help", "Show this help")
     table.add_row("/quit", "Exit")
     table.add_row("", "")
-    table.add_row("<name>: <message>", "Add message and generate response")
+    table.add_row("<message>", "Send as yourself, get response from target")
 
     console.print(table)
 
 
-def show_status(target_name: str, members: List[str], chat_type: str, context_len: int):
+def show_status(sender_name: str, target_name: str, chat_type: str, context_len: int):
     """Display current session status."""
     status = Text()
-    status.append("Target: ", style="dim")
+    status.append("You: ", style="dim")
+    status.append(sender_name, style="bold blue")
+    status.append("  →  ", style="dim")
     status.append(target_name, style="bold cyan")
     status.append("  |  ", style="dim")
-    status.append("Type: ", style="dim")
     status.append(chat_type, style="yellow")
     status.append("  |  ", style="dim")
-    status.append("Members: ", style="dim")
-    status.append(", ".join(members), style="white")
-    status.append("  |  ", style="dim")
-    status.append("Context: ", style="dim")
     status.append(f"{context_len} msgs", style="green" if context_len > 0 else "dim")
     console.print(status)
 
@@ -300,17 +262,30 @@ def interactive_mode(model, tokenizer):
         )
     )
     console.print()
+
+    # Onboarding
+    console.print("[bold]Setup[/]")
+    sender_name = Prompt.ask("  Your name").strip()
+    target_name = Prompt.ask("  Target name (who to generate for)").strip()
+    members_input = Prompt.ask("  All members (comma-separated)", default=f"{sender_name}, {target_name}")
+    members = [m.strip() for m in members_input.split(",") if m.strip()]
+
+    if sender_name not in members:
+        members.append(sender_name)
+    if target_name not in members:
+        members.append(target_name)
+
+    chat_type = "dm" if len(members) == 2 else "group"
+
+    console.print()
     show_interactive_help()
     console.print()
 
     context: List[Dict[str, str]] = []
-    target_name = "Contact"
-    members = ["User", "Contact"]
-    chat_type = "dm"
 
     while True:
         try:
-            show_status(target_name, members, chat_type, len(context))
+            show_status(sender_name, target_name, chat_type, len(context))
             user_input = Prompt.ask("[bold]>[/]").strip()
         except (EOFError, KeyboardInterrupt):
             console.print("\n[dim]Goodbye![/]")
@@ -351,8 +326,15 @@ def interactive_mode(model, tokenizer):
             console.print(f"[green]Target set to:[/] [bold]{target_name}[/]")
             continue
 
+        if user_input.startswith("/sender "):
+            sender_name = user_input[8:].strip()
+            if sender_name not in members:
+                members.append(sender_name)
+            console.print(f"[green]Sender set to:[/] [bold]{sender_name}[/]")
+            continue
+
         if user_input.startswith("/members "):
-            members = user_input[9:].strip().split()
+            members = [m.strip() for m in user_input[9:].split(",") if m.strip()]
             if target_name not in members:
                 members.append(target_name)
             console.print(f"[green]Members set to:[/] {', '.join(members)}")
@@ -372,47 +354,148 @@ def interactive_mode(model, tokenizer):
             console.print("[dim]Type /help for available commands.[/]")
             continue
 
-        if ": " in user_input:
+        # Message input - use sender_name by default, or "Name: message" to override
+        if ": " in user_input and user_input.split(": ", 1)[0] in members:
             parts = user_input.split(": ", 1)
             name = parts[0]
-            content = parts[1] if len(parts) > 1 else ""
-
-            # Add sender to members if new
-            if name not in members:
-                members.append(name)
-
-            context.append({
-                "name": name,
-                "delta": "<5m>",
-                "content": content,
-            })
-
-            # Show the input message
-            console.print(f"\n  [bold blue]{name}[/] [dim]<5m>[/]: {content}")
-
-            with console.status(f"[cyan]Generating response from {target_name}...[/]"):
-                response = generate_response(
-                    model,
-                    tokenizer,
-                    context[-50:],
-                    target_name,
-                    chat_type=chat_type,
-                    members=members,
-                )
-
-            if response:
-                console.print(
-                    f"  [bold green]{target_name}[/] [dim]{response.delta}[/]: {response.content}\n"
-                )
-                context.append({
-                    "name": response.name,
-                    "delta": response.delta,
-                    "content": response.content,
-                })
-            else:
-                console.print("[red]Failed to generate valid response.[/]\n")
+            content = parts[1]
         else:
-            console.print("[red]Invalid format.[/] Use: [cyan]<name>: <message>[/]")
+            name = sender_name
+            content = user_input
+
+        context.append({
+            "name": name,
+            "delta": "<5m",
+            "content": content,
+        })
+
+        # Show the input message
+        console.print(f"\n  [bold blue]{name}[/] [dim]<5m[/]: {content}")
+
+        with console.status(f"[cyan]Generating response from {target_name}...[/]"):
+            response = generate_response(
+                model,
+                tokenizer,
+                context[-50:],
+                target_name,
+                chat_type=chat_type,
+                members=members,
+            )
+
+        if response:
+            console.print(
+                f"  [bold green]{target_name}[/] [dim]{response.delta}[/]: {response.content}\n"
+            )
+            context.append({
+                "name": response.name,
+                "delta": response.delta,
+                "content": response.content,
+            })
+        else:
+            console.print("[red]Failed to generate valid response.[/]\n")
+
+
+def auto_mode(
+    model,
+    tokenizer,
+    members: List[str],
+    chat_type: str,
+    max_turns: int = 0,
+    seed_message: Optional[str] = None,
+    seed_sender: Optional[str] = None,
+):
+    """
+    Auto-generate a conversation between members.
+
+    Streams output to terminal, letting the model hallucinate naturally.
+    """
+    console.print()
+    console.print(
+        Panel.fit(
+            f"[bold cyan]Ventriloquist[/] Auto Mode\n[dim]{chat_type} with {', '.join(members)}[/]",
+            border_style="cyan",
+        )
+    )
+    console.print("[dim]Press Ctrl+C to stop[/]\n")
+
+    # Build initial prompt with header
+    header = build_header(chat_type, members)
+    prompt = header + "\n"
+
+    # Add seed message if provided
+    if seed_message:
+        sender = seed_sender or members[0]
+        seed_json = json.dumps({
+            "name": sender,
+            "delta": "<1m",
+            "content": seed_message,
+        }, ensure_ascii=False)
+        prompt += seed_json + "\n"
+        console.print(f"[bold blue]{sender}[/] [dim]<1m[/]: {seed_message}")
+
+    turn_count = 0
+    colors = ["blue", "green", "magenta", "yellow"]
+
+    try:
+        while max_turns == 0 or turn_count < max_turns:
+            # Tokenize current prompt
+            inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+
+            # Generate multiple messages at once
+            with torch.no_grad():
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=500,
+                    temperature=0.8,
+                    top_p=0.9,
+                    do_sample=True,
+                    pad_token_id=tokenizer.pad_token_id,
+                    eos_token_id=tokenizer.eos_token_id,
+                )
+
+            # Get only the new tokens
+            new_tokens = outputs[0][inputs.input_ids.shape[1]:]
+            new_text = tokenizer.decode(new_tokens, skip_special_tokens=True)
+
+            if not new_text.strip():
+                console.print("[dim]Model stopped generating.[/]")
+                break
+
+            # Split on }{ to handle multiple JSON objects without newlines
+            # Also split on newlines for properly formatted output
+            raw_chunks = new_text.replace("}{", "}\n{").strip().split("\n")
+            for line in raw_chunks:
+                line = line.strip()
+                if not line:
+                    continue
+
+                try:
+                    msg = json.loads(line)
+                    name = msg.get("name", "???")
+                    delta = msg.get("delta", "")
+                    content = msg.get("content", "")
+
+                    # Color based on member index
+                    member_idx = members.index(name) if name in members else 0
+                    color = colors[member_idx % len(colors)]
+
+                    console.print(f"[bold {color}]{name}[/] [dim]{delta}[/]: {content}")
+                    turn_count += 1
+
+                    # Add to prompt for context
+                    prompt += line + "\n"
+
+                    if max_turns > 0 and turn_count >= max_turns:
+                        break
+                except json.JSONDecodeError:
+                    # Not valid JSON, might be partial - skip
+                    console.print(f"[dim red]Parse error: {line[:400]}...[/]")
+                    continue
+
+    except KeyboardInterrupt:
+        console.print("\n[dim]Stopped.[/]")
+
+    console.print(f"\n[dim]Generated {turn_count} messages.[/]")
 
 
 def main():
@@ -433,6 +516,32 @@ def main():
         action="store_true",
         help="Use 4-bit quantization (for 16GB GPUs)",
     )
+    parser.add_argument(
+        "--auto",
+        action="store_true",
+        help="Auto-generate conversation (no user input)",
+    )
+    parser.add_argument(
+        "--members",
+        type=str,
+        help="Comma-separated member names for auto mode",
+    )
+    parser.add_argument(
+        "--turns",
+        type=int,
+        default=0,
+        help="Max messages to generate in auto mode (0=unlimited)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=str,
+        help="Initial message to start the conversation (auto mode)",
+    )
+    parser.add_argument(
+        "--seed_sender",
+        type=str,
+        help="Who sends the seed message (defaults to first member)",
+    )
     args = parser.parse_args()
 
     model, tokenizer = load_model(
@@ -440,7 +549,24 @@ def main():
         load_in_8bit=args.load_in_8bit,
         load_in_4bit=args.load_in_4bit,
     )
-    interactive_mode(model, tokenizer)
+
+    if args.auto:
+        if not args.members:
+            console.print("[red]--auto requires --members 'Name1, Name2'[/]")
+            return
+        members = [m.strip() for m in args.members.split(",")]
+        chat_type = "dm" if len(members) == 2 else "group"
+        auto_mode(
+            model,
+            tokenizer,
+            members,
+            chat_type,
+            args.turns,
+            seed_message=args.seed,
+            seed_sender=args.seed_sender,
+        )
+    else:
+        interactive_mode(model, tokenizer)
 
 
 if __name__ == "__main__":

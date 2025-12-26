@@ -13,10 +13,20 @@ dependencies = [
     # Preprocessing
     "pandas>=2.0.0",
     "numpy>=1.24.0",
-    # Training (unsloth for fast LoRA training)
-    "unsloth>=2024.12",
+    # Inference (works on all platforms including Mac)
+    "transformers>=4.40.0",
+    "peft>=0.10.0",
+    "torch>=2.0.0",
+    "datasets>=2.18.0",
+    # Logging
     "wandb>=0.16.0",
     "tqdm>=4.66.0",
+]
+
+[project.optional-dependencies]
+# Fast training with unsloth (requires NVIDIA/AMD/Intel GPU)
+train = [
+    "unsloth>=2024.12",
 ]
 
 [build-system]

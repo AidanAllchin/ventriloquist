@@ -70,6 +70,7 @@ venv.bak/
 logs/
 logs/*
 data/*
+!data/ventriloquist.png
 *.plist
 
 # SQLite database (if any local testing or debug dbs)
@@ -80,6 +81,7 @@ data/*
 *.log
 *.pot
 *.mo
+.claude/
 
 # Training
 wandb/

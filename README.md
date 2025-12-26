@@ -1,3 +1,9 @@
+<div align="center">
+
+<img src="data/ventriloquist.png" alt="Ventriloquist" width="400"/>
+
+</div>
+
 # Ventriloquist
 
 Personality modeling via iMessage fine-tuning. Train a completion model that predicts what specific people would say, capturing their tone, humor, and conversational patterns.
@@ -20,11 +26,11 @@ uv run python main.py
 
 The pipeline has 3 steps:
 
-| Step | Name | Requirements |
-|------|------|--------------|
-| 1 | Collect iMessage data | macOS only |
-| 2 | Preprocess data | Any platform |
-| 3 | Train model | GPU recommended |
+| Step | Name                  | Requirements    |
+| ---- | --------------------- | --------------- |
+| 1    | Collect iMessage data | macOS only      |
+| 2    | Preprocess data       | Any platform    |
+| 3    | Train model           | GPU recommended |
 
 Run individually or all at once:
 
@@ -40,16 +46,19 @@ uv run python main.py a    # Run all
 iMessage collection requires macOS. Training works best on Linux/Windows with a GPU.
 
 **On macOS:**
+
 ```bash
 uv run python main.py 1
 ```
 
 **Transfer data to Linux/Windows:**
+
 ```bash
 scp -r data/ your-gpu-machine:~/ventriloquist/
 ```
 
 **On Linux/Windows:**
+
 ```bash
 uv run python main.py 2
 uv run python main.py 3
@@ -91,21 +100,22 @@ Transforms raw messages into training-ready format:
 
 Fine-tunes using Unsloth for 2-5x speedup.
 
-| Setting | Value |
-|---------|-------|
-| Base model | `unsloth/Qwen3-8B-Base` |
-| LoRA rank | 128 |
-| LoRA alpha | 256 |
-| Learning rate | 2e-4 |
-| Batch size | 2 × 16 gradient accumulation |
-| Epochs | 1 |
-| Max sequence length | 4096 |
+| Setting             | Value                        |
+| ------------------- | ---------------------------- |
+| Base model          | `unsloth/Qwen3-8B-Base`      |
+| LoRA rank           | 128                          |
+| LoRA alpha          | 256                          |
+| Learning rate       | 2e-4                         |
+| Batch size          | 2 × 16 gradient accumulation |
+| Epochs              | 1                            |
+| Max sequence length | 4096                         |
 
 **Loss masking:** Only the final message of each window contributes to loss. This ensures training matches inference—given full context, predict the next message.
 
 **Output:** `checkpoints/ventriloquist/final/`
 
 Override defaults:
+
 ```bash
 uv run python -m src.training.train --lora_r 64 --learning_rate 1e-4
 ```
@@ -117,6 +127,7 @@ uv run python -m src.training.inference
 ```
 
 Commands:
+
 - `/target <name>` — Set who to generate for
 - `/members <name1> <name2>` — Set conversation participants
 - `/type <dm|group>` — Set chat type
@@ -126,6 +137,7 @@ Commands:
 - `/quit` — Exit
 
 Type messages as `<name>: <content>`:
+
 ```
 > John: hey, you free tonight?
 
@@ -142,6 +154,7 @@ uv run python -m src.training.evaluate
 ```
 
 Computes:
+
 - Perplexity on held-out windows
 - JSON validity rate
 - Delta validity rate
@@ -163,6 +176,7 @@ uv run python -m src.training.evaluate --compare 5 --with_base
 ```
 
 Example output:
+
 ```
 ============================================================
 Chat: dm with ['Aidan Allchin', 'John']
@@ -226,7 +240,23 @@ WANDB_API_KEY=your_key_here                  # Or run `wandb login`
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.12+
 - macOS for collection (iMessage access)
 - GPU with 24GB+ VRAM recommended for training
 - ~10GB disk space for model weights
+
+## Installation
+
+**Basic install (inference on any platform including Mac):**
+
+```bash
+uv sync
+```
+
+**With training support (requires NVIDIA/AMD/Intel GPU):**
+
+```bash
+uv sync --extra train
+```
+
+The base installation uses standard HuggingFace `transformers` + `peft` for inference, which works on CPU, CUDA, and Apple Silicon (MPS). Training uses Unsloth for 2-5x speedup but requires a compatible GPU.

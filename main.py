@@ -6,7 +6,7 @@ Interactive CLI for running pipeline steps individually or together.
 File: main.py
 Author: Aidan Allchin
 Created: 2025-12-23
-Last Modified: 2025-12-24
+Last Modified: 2025-12-26
 """
 
 import asyncio
@@ -39,6 +39,27 @@ STEPS = {
         "description": "Fine-tune Qwen3-8B-Base with LoRA",
         "requires": "GPU (Linux/Windows recommended)",
     },
+    "4": {
+        "name": "Inference",
+        "description": "Run trained model (interactive, auto, or live chat)",
+        "requires": "Trained model",
+    },
+}
+
+# Inference submenu options
+INFERENCE_OPTIONS = {
+    "1": {
+        "name": "Interactive",
+        "description": "Chat with synthetic context",
+    },
+    "2": {
+        "name": "Auto",
+        "description": "Watch model generate a conversation",
+    },
+    "3": {
+        "name": "Live Chat",
+        "description": "Chat with real iMessage context (macOS)",
+    },
 }
 
 
@@ -66,8 +87,9 @@ def show_menu():
     console.print(table)
     console.print()
     console.print("[dim]Commands:[/]")
-    console.print("  [cyan]1-3[/]     Run a specific step")
-    console.print("  [cyan]a[/]       Run all steps (1-3)")
+    console.print("  [cyan]1-3[/]     Run a pipeline step")
+    console.print("  [cyan]4[/]       Live Chat (inference with real context)")
+    console.print("  [cyan]a[/]       Run all pipeline steps (1-3)")
     console.print("  [cyan]q[/]       Quit")
     console.print()
 
@@ -130,6 +152,90 @@ def _run_step_3():
     else:
         console.print("[green]Training complete![/]")
 
+
+def _show_inference_menu():
+    """Display the inference submenu."""
+    console.print()
+    console.print(
+        Panel.fit(
+            "[bold cyan]Inference Options[/]",
+            border_style="cyan",
+        )
+    )
+    console.print()
+
+    table = Table(box=box.ROUNDED, show_header=True, header_style="bold")
+    table.add_column("Option", style="cyan", width=6)
+    table.add_column("Name", style="white")
+    table.add_column("Description", style="dim")
+
+    for key, opt in INFERENCE_OPTIONS.items():
+        table.add_row(key, opt["name"], opt["description"])
+
+    console.print(table)
+    console.print()
+
+
+def _run_step_4():
+    """Inference submenu."""
+    from src.inference import (
+        live_chat,
+        interactive_mode,
+        auto_mode,
+        load_model,
+        find_checkpoints,
+        select_checkpoint,
+    )
+
+    _show_inference_menu()
+
+    choice = Prompt.ask(
+        "Select option",
+        choices=list(INFERENCE_OPTIONS.keys()) + ["q"],
+        default="q",
+    )
+
+    if choice == "q":
+        return
+
+    # Select checkpoint first
+    checkpoints = find_checkpoints()
+    adapter_path = select_checkpoint(checkpoints)
+
+    if adapter_path is None:
+        console.print("[dim]Cancelled.[/]")
+        return
+
+    if choice == "1":
+        # Interactive mode
+        model, tokenizer = load_model(adapter_path)
+        interactive_mode(model, tokenizer)
+    elif choice == "2":
+        # Auto mode - need members
+        members_input = Prompt.ask("Members (comma-separated)")
+        members = [m.strip() for m in members_input.split(",") if m.strip()]
+        if len(members) < 2:
+            console.print("[red]Need at least 2 members.[/]")
+            return
+
+        seed = Prompt.ask("Seed message (optional)", default="")
+        turns = Prompt.ask("Max turns (0=unlimited)", default="0")
+
+        model, tokenizer = load_model(adapter_path)
+        chat_type = "dm" if len(members) == 2 else "group"
+        auto_mode(
+            model,
+            tokenizer,
+            members,
+            chat_type,
+            max_turns=int(turns),
+            seed_message=seed if seed else None,
+        )
+    elif choice == "3":
+        # Live chat
+        live_chat(adapter_path)
+
+
 async def run_all_steps():
     """Run all pipeline steps."""
     console.print("\n[bold cyan]Running full pipeline...[/]\n")
@@ -157,6 +263,8 @@ async def run_single_step(step: str):
         await _run_step_2()
     elif step == "3":
         _run_step_3()
+    elif step == "4":
+        _run_step_4()
 
 async def main():
     """Main entry point with interactive menu."""

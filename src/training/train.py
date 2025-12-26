@@ -10,7 +10,7 @@ Usage:
 File: training/train.py
 Author: Aidan Allchin
 Created: 2025-12-24
-Last Modified: 2025-12-25
+Last Modified: 2025-12-26
 """
 
 import argparse
@@ -19,8 +19,6 @@ from datetime import datetime
 
 import wandb
 from transformers import TrainingArguments, TrainerCallback
-from trl.trainer.sft_trainer import SFTTrainer
-from unsloth import FastLanguageModel
 
 
 class WandbMetricsCallback(TrainerCallback):
@@ -101,6 +99,13 @@ def parse_args() -> TrainingConfig:
 
 def load_model_and_tokenizer(config: TrainingConfig):
     """Load model and tokenizer using Unsloth."""
+    try:
+        from unsloth import FastLanguageModel  # type: ignore
+    except ImportError:
+        raise ImportError(
+            "Training requires unsloth. Install with: uv pip install 'ventriloquist[train]'"
+        )
+
     log.info(f"Loading model: {config.base_model}")
 
     model, tokenizer = FastLanguageModel.from_pretrained(
@@ -123,6 +128,8 @@ def load_model_and_tokenizer(config: TrainingConfig):
 
 def apply_lora(model, config: TrainingConfig):
     """Apply LoRA adapters using Unsloth."""
+    from unsloth import FastLanguageModel  # type: ignore
+
     log.info(f"Applying LoRA: r={config.lora_r}, alpha={config.lora_alpha}")
 
     model = FastLanguageModel.get_peft_model(
@@ -141,6 +148,13 @@ def apply_lora(model, config: TrainingConfig):
 
 def main():
     """Main training function."""
+    try:
+        from trl.trainer.sft_trainer import SFTTrainer  # type: ignore
+    except ImportError:
+        raise ImportError(
+            "Training requires trl. Install with: uv pip install 'ventriloquist[train]'"
+        )
+
     config = parse_args()
 
     # Create output directory
