@@ -147,33 +147,23 @@ def convert_message_to_training(
         if original_text:
             reply_to_text = format_reply_context(original_text)
 
-    # Split content on newlines - iMessage often stores rapid-fire messages this way
+    # Keep full content - escaping is handled by json.dumps when rendering
     content = msg.text or ""
-    content_parts = [part.strip() for part in content.split("\n") if part.strip()]
-
-    if not content_parts:
-        content_parts = [""]  # Keep at least one message even if empty
-
-    # Create a TrainingMessage for each content part
-    results = []
     chat_id = msg.chat_identifier or "unknown"
     timestamp = msg.timestamp.isoformat()
 
-    for part in content_parts:
-        results.append(
-            TrainingMessage(
-                chat_id=chat_id,
-                from_contact=from_contact,  # type: ignore
-                timestamp=timestamp,
-                content=part,
-                is_group_chat=is_group,
-                chat_members=chat_members,
-                reply_to_text=reply_to_text,
-                thread_originator_guid=msg.thread_originator_guid,
-            )
+    return [
+        TrainingMessage(
+            chat_id=chat_id,
+            from_contact=from_contact,  # type: ignore
+            timestamp=timestamp,
+            content=content,
+            is_group_chat=is_group,
+            chat_members=chat_members,
+            reply_to_text=reply_to_text,
+            thread_originator_guid=msg.thread_originator_guid,
         )
-
-    return results
+    ]
 
 
 async def collect_individual_training_messages(

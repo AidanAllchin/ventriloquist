@@ -81,7 +81,8 @@ def render_window(messages: List[TrainingMessage]) -> str:
         bucket = compute_delta_bucket(delta)
         lines.append(messages[i].to_window_json(bucket))
 
-    return "\n".join(lines)
+    # Each line ends with newline (including last) so model learns to output newlines
+    return "".join(line + "\n" for line in lines)
 
 
 def generate_windows_from_messages(
