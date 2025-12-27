@@ -4,6 +4,7 @@ MIME type to content_type mapping for training data.
 File: gemini/content_types.py
 Author: Aidan Allchin
 Created: 2025-12-27
+Last Modified: 2025-12-27
 """
 
 from typing import Optional
@@ -51,6 +52,16 @@ SKIP_TYPES = {
     "text/x-python-script",
     "application/x-x509-ca-cert",
     "model/vnd.reality",
+}
+
+# Document types Gemini doesn't support (use filename instead)
+UNSUPPORTED_DOCUMENT_TYPES = {
+    "application/msword",  # .doc
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # .docx
+    "application/vnd.ms-excel",  # .xls
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",  # .xlsx
+    "application/vnd.ms-powerpoint",  # .ppt
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # .pptx
 }
 
 
@@ -151,6 +162,10 @@ def should_call_gemini(mime_type: Optional[str], is_audio_message: bool = False)
 
     # Skip generic files
     if content_type == "file":
+        return False
+
+    # Skip unsupported document types (Word, Excel, PowerPoint)
+    if mime_lower in UNSUPPORTED_DOCUMENT_TYPES:
         return False
 
     # For audio: only call Gemini for voice memos

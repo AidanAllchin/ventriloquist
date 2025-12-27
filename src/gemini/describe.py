@@ -7,6 +7,7 @@ Gemini API, and caches results for use in training data generation.
 File: gemini/describe.py
 Author: Aidan Allchin
 Created: 2025-12-27
+Last Modified: 2025-12-27
 """
 
 import asyncio
@@ -274,8 +275,10 @@ async def describe_attachment(
     except FileNotFoundError:
         return content_type, "[NA]", None
     except Exception as e:
-        log.warning(f"Error processing {attachment.guid}: {e}")
-        return content_type, None, str(e)
+        # Ensure error message is ASCII-safe for logging/caching
+        error_msg = str(e).encode("ascii", errors="replace").decode("ascii")
+        log.warning(f"Error processing {attachment.guid}: {error_msg}")
+        return content_type, None, error_msg
     finally:
         # Clean up temp file
         if temp_path and temp_path != file_path:

@@ -7,6 +7,7 @@ Also handles downsampling images to 768x768 and trimming audio/video.
 File: gemini/convert.py
 Author: Aidan Allchin
 Created: 2025-12-27
+Last Modified: 2025-12-27
 """
 
 import io
@@ -70,9 +71,9 @@ def downsample_image(image_path: str, max_size: int = MAX_IMAGE_SIZE) -> Tuple[b
     if not path.exists():
         raise FileNotFoundError(f"Image not found: {image_path}")
 
-    # Handle HEIC separately
+    # Handle HEIC/HEIF separately (including .heics for Live Photos)
     suffix = path.suffix.lower()
-    if suffix in (".heic", ".heif"):
+    if suffix in (".heic", ".heif", ".heics"):
         return convert_heic_to_jpeg(image_path, max_size)
 
     # Load with PIL
@@ -99,6 +100,9 @@ def convert_heic_to_jpeg(
     """
     Convert HEIC image to JPEG bytes.
 
+    Handles both single images and HEIC sequences (Live Photos) by
+    extracting the first frame.
+
     Args:
         heic_path: Path to HEIC file
         max_size: Maximum dimension for output
@@ -119,9 +123,23 @@ def convert_heic_to_jpeg(
     if not path.exists():
         raise FileNotFoundError(f"HEIC file not found: {heic_path}")
 
-    # Read HEIC
-    heif_file = pillow_heif.read_heif(str(path))
-    image = Image.frombytes(heif_file.mode, heif_file.size, heif_file.data)
+    # Use open_heif for sequences (Live Photos), fall back to read_heif for single images
+    try:
+        heif_file = pillow_heif.open_heif(str(path))
+        # For sequences, get first frame (the "hero" still image)
+        if len(heif_file) > 1:
+            frame = heif_file[0]
+            image = Image.frombytes(frame.mode, frame.size, frame.data)
+        else:
+            if not heif_file.data:
+                raise ValueError("HEIC file data is empty")
+            image = Image.frombytes(heif_file.mode, heif_file.size, heif_file.data)
+    except Exception:
+        # Fall back to read_heif for simple files
+        heif_file = pillow_heif.read_heif(str(path))
+        if not heif_file.data:
+            raise ValueError("HEIC file data is empty")
+        image = Image.frombytes(heif_file.mode, heif_file.size, heif_file.data)
 
     # Convert to RGB if needed
     if image.mode != "RGB":
