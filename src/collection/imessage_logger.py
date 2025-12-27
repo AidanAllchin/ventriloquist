@@ -232,7 +232,9 @@ class iMessageLogger:
             GROUP_CONCAT(attachment.filename, '|||') as attachment_paths,
             GROUP_CONCAT(attachment.uti, '|||') as attachment_utis,
             GROUP_CONCAT(attachment.transfer_name, '|||') as attachment_names,
-            GROUP_CONCAT(attachment.is_sticker, '|||') as attachment_stickers
+            GROUP_CONCAT(attachment.is_sticker, '|||') as attachment_stickers,
+            message.associated_message_type,
+            REPLACE(REPLACE(message.associated_message_guid, 'p:0/', ''), 'bp:', '') as associated_message_guid
         FROM
             message
         LEFT JOIN
@@ -305,6 +307,8 @@ class iMessageLogger:
                         reply_to_guid = row[16]
                         thread_originator_guid = row[17]
                         is_audio_message = bool(row[18])
+                        associated_message_type = row[25]  # Reaction type (2000=Loved, etc.)
+                        associated_message_guid = row[26]  # GUID of message being reacted to
 
                         # Parse attachment data from GROUP_CONCAT fields
                         attachments = None
@@ -398,7 +402,9 @@ class iMessageLogger:
                             date_read=date_read,
                             date_delivered=date_delivered,
                             reply_to_guid=reply_to_guid,
-                            thread_originator_guid=thread_originator_guid
+                            thread_originator_guid=thread_originator_guid,
+                            associated_message_type=associated_message_type,
+                            associated_message_guid=associated_message_guid,
                         ))
             log.info(f"Skipped {corrupted_messages} corrupted messages")
         except Exception as e:

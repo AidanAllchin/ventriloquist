@@ -58,20 +58,15 @@ class TrainingMessage(BaseModel):
             delta_bucket: Pre-computed time delta bucket (e.g., "<5m", "<1h")
 
         Returns:
-            JSON string: {"name": "...", "delta": "...", "content_type": "...", "text": "..."}
+            JSON string: {"name": "...", "delta": "...", "reply_to": ..., "content_type": "...", "text": "..."}
         """
-        # Build content with reply prefix if applicable
-        if self.reply_to_text:
-            full_content = f'[replying to "{self.reply_to_text}"] {self.content}'
-        else:
-            full_content = self.content
-
         return json.dumps(
             {
                 "name": self.from_contact,
                 "delta": delta_bucket,
+                "reply_to": self.reply_to_text,  # null or truncated string
                 "content_type": self.content_type,
-                "text": full_content,
+                "text": self.content,
             },
             ensure_ascii=False,
         )

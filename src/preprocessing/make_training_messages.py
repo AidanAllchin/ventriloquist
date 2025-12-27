@@ -4,7 +4,7 @@ Create training messages from contacts and message database.
 File: preprocessing/make_training_messages.py
 Author: Aidan Allchin
 Created: 2025-12-23
-Last Modified: 2025-12-26
+Last Modified: 2025-12-27
 """
 
 import logging
@@ -18,7 +18,6 @@ from ..database import (
     detect_user_identifiers_from_db,
     get_cached_descriptions,
     get_group_chats_by_participants,
-    get_message_texts_by_guids,
     get_messages_by_chat_identifiers,
     get_messages_with_identifiers,
 )
@@ -90,20 +89,46 @@ def format_reply_context(original_text: str, max_len: int = 50) -> Optional[str]
     return truncated
 
 
+# Reaction type codes from iMessage
+REACTION_TYPES = {
+    2000: "Loved",
+    2001: "Liked",
+    2002: "Disliked",
+    2003: "Laughed",
+    2004: "Emphasized",
+    2005: "Questioned",
+}
+
+
+def is_reaction(msg: "MessageRecord") -> bool:
+    """Check if a message is a reaction (tapback)."""
+    return (
+        msg.associated_message_type is not None
+        and 2000 <= msg.associated_message_type < 3000
+    )
+
+
+def get_reaction_text(reaction_type: int) -> str:
+    """Convert reaction type code to text."""
+    return REACTION_TYPES.get(reaction_type, f"Reacted ({reaction_type})")
+
+
 def convert_message_to_training(
     msg: MessageRecord,
     identifier_map: Dict[str, str],
     user_identifiers: Set[str],
     is_group: bool = False,
     group_participants: Optional[List[str]] = None,
-    guid_to_text: Optional[Dict[str, str]] = None,
+    guid_to_content: Optional[Dict[str, str]] = None,
     attachment_cache: Optional[Dict[str, CachedDescription]] = None,
 ) -> List[TrainingMessage]:
     """
     Convert a MessageRecord to TrainingMessage(s).
 
-    Creates TrainingMessages for attachments first, then text content.
-    Attachments use cached descriptions from Gemini processing.
+    Handles three cases:
+    1. Reactions: content_type="reaction", reply_to=original message content
+    2. Regular messages with attachments: attachments first, then text
+    3. Regular text messages
 
     Args:
         msg: MessageRecord to convert
@@ -111,31 +136,28 @@ def convert_message_to_training(
         user_identifiers: Set of user's identifiers
         is_group: Whether this is a group chat message
         group_participants: List of participant identifiers for group chats
-        guid_to_text: Mapping from GUID to message text for reply lookups
+        guid_to_content: Mapping from message GUID to content (text or attachment description)
         attachment_cache: Mapping from attachment GUID to cached description
 
     Returns:
-        List of TrainingMessage objects (attachments first, then text if present)
+        List of TrainingMessage objects
     """
     # Determine sender
     if msg.is_from_me:
         from_contact = MY_NAME
     else:
-        # For received messages, sender_id contains the sender
         sender_id = msg.sender_id or "Unknown"
         from_contact = identifier_map.get(sender_id, sender_id)
 
-    # Determine chat members (always include user's name for consistency)
+    # Determine chat members
     if is_group and group_participants:
-        # Convert participant identifiers to names
         chat_members = set()
         for participant in group_participants:
             if participant not in user_identifiers:
                 chat_members.add(identifier_map.get(participant, participant))
-        chat_members.add(MY_NAME)  # Always include user's name
+        chat_members.add(MY_NAME)
         chat_members = sorted(chat_members)
     else:
-        # Individual chat - just the two participants
         if msg.is_from_me:
             other_person = msg.recipient_id or "Unknown"
             other_name = identifier_map.get(other_person, other_person)
@@ -144,34 +166,64 @@ def convert_message_to_training(
             other_name = identifier_map.get(other_person, other_person)
         chat_members = sorted([MY_NAME, other_name])  # type: ignore
 
-    # Resolve reply context (use thread_originator_guid for actual inline replies)
-    reply_to_text = None
-    if msg.thread_originator_guid and guid_to_text:
-        original_text = guid_to_text.get(msg.thread_originator_guid)
-        if original_text:
-            reply_to_text = format_reply_context(original_text)
-
     chat_id = msg.chat_identifier or "unknown"
     timestamp = msg.timestamp.isoformat()
+
+    # Handle reactions
+    if is_reaction(msg):
+        # Resolve what we're reacting to
+        reply_to = None
+        if msg.associated_message_guid and guid_to_content:
+            original_content = guid_to_content.get(msg.associated_message_guid)
+            if original_content:
+                reply_to = format_reply_context(original_content)
+            else:
+                # Can't find original message - skip this reaction
+                return []
+        else:
+            # No GUID to look up - skip
+            return []
+
+        return [
+            TrainingMessage(
+                chat_id=chat_id,
+                from_contact=from_contact,  # type: ignore
+                timestamp=timestamp,
+                content=get_reaction_text(msg.associated_message_type),  # type: ignore
+                content_type="reaction",
+                is_group_chat=is_group,
+                chat_members=chat_members,
+                reply_to_text=reply_to,
+                thread_originator_guid=msg.associated_message_guid,
+            )
+        ]
+
+    # Resolve reply context for regular messages (replies and inline replies)
+    reply_to = None
+    reply_guid = msg.thread_originator_guid
+    if reply_guid and guid_to_content:
+        original_content = guid_to_content.get(reply_guid)
+        if original_content:
+            reply_to = format_reply_context(original_content)
+
     results = []
 
     # Process attachments first (if any)
     if msg.attachments and attachment_cache:
+        first_attachment = True
         for attachment in msg.attachments:
             cached = attachment_cache.get(attachment.guid)
             if cached and cached.description:
-                # Use cached description
                 content_type = cached.content_type
                 content = cached.description
             else:
-                # No cached description - derive content_type and use placeholder
                 content_type = get_content_type(attachment.mime_type, attachment.uti)
-                # For audio files that aren't voice memos, use transfer_name
                 if content_type == "audio" and not msg.is_audio_message and attachment.transfer_name:
                     content = attachment.transfer_name
                 else:
                     content = "[NA]"
 
+            # First attachment carries reply context if this message is a reply
             results.append(
                 TrainingMessage(
                     chat_id=chat_id,
@@ -181,13 +233,16 @@ def convert_message_to_training(
                     content_type=content_type,
                     is_group_chat=is_group,
                     chat_members=chat_members,
-                    reply_to_text=None,  # Reply context only applies to text
-                    thread_originator_guid=None,
+                    reply_to_text=reply_to if first_attachment else None,
+                    thread_originator_guid=reply_guid if first_attachment else None,
                 )
             )
+            first_attachment = False
 
     # Add text message if present
     if msg.text and msg.text.strip():
+        # If we already added attachments with reply context, text doesn't repeat it
+        text_reply_to = reply_to if not results else None
         results.append(
             TrainingMessage(
                 chat_id=chat_id,
@@ -197,12 +252,50 @@ def convert_message_to_training(
                 content_type="text",
                 is_group_chat=is_group,
                 chat_members=chat_members,
-                reply_to_text=reply_to_text,
-                thread_originator_guid=msg.thread_originator_guid,
+                reply_to_text=text_reply_to,
+                thread_originator_guid=reply_guid if text_reply_to else None,
             )
         )
 
     return results
+
+
+def build_guid_to_content(
+    messages: List[MessageRecord],
+    attachment_cache: Dict[str, CachedDescription],
+) -> Dict[str, str]:
+    """
+    Build a mapping from message GUID to content string.
+
+    For text messages: uses the text
+    For attachment-only messages: uses the first attachment's description
+
+    Args:
+        messages: List of messages to build mapping from
+        attachment_cache: Cached attachment descriptions
+
+    Returns:
+        Dict mapping message GUID to content string
+    """
+    guid_to_content = {}
+    for msg in messages:
+        content = None
+
+        # Prefer text content
+        if msg.text and msg.text.strip():
+            content = msg.text.strip()
+        # Fall back to first attachment description
+        elif msg.attachments:
+            for att in msg.attachments:
+                cached = attachment_cache.get(att.guid)
+                if cached and cached.description:
+                    content = cached.description
+                    break
+
+        if content:
+            guid_to_content[msg.guid] = content
+
+    return guid_to_content
 
 
 async def collect_individual_training_messages(
@@ -224,11 +317,6 @@ async def collect_individual_training_messages(
     log.info(f"Fetching individual messages for {len(contact_identifiers)} contacts...")
     messages = await get_messages_with_identifiers(contact_identifiers)
 
-    # Collect all thread_originator_guids for batch lookup (actual inline replies)
-    reply_guids = [msg.thread_originator_guid for msg in messages if msg.thread_originator_guid]
-    guid_to_text = await get_message_texts_by_guids(reply_guids) if reply_guids else {}
-    log.info(f"Resolved {len(guid_to_text)} inline reply references")
-
     # Collect all attachment GUIDs for batch lookup
     attachment_guids = []
     for msg in messages:
@@ -237,10 +325,14 @@ async def collect_individual_training_messages(
     attachment_cache = await get_cached_descriptions(attachment_guids) if attachment_guids else {}
     log.info(f"Loaded {len(attachment_cache)} cached attachment descriptions")
 
+    # Build guid_to_content mapping for reply/reaction lookups
+    guid_to_content = build_guid_to_content(messages, attachment_cache)
+    log.info(f"Built content mapping for {len(guid_to_content)} messages")
+
     training_messages = []
     for msg in messages:
-        # Skip messages without text AND without attachments
-        if not msg.text and not msg.attachments:
+        # Skip messages without text AND without attachments AND not a reaction
+        if not msg.text and not msg.attachments and not is_reaction(msg):
             continue
 
         training_msgs = convert_message_to_training(
@@ -248,7 +340,7 @@ async def collect_individual_training_messages(
             identifier_map,
             user_identifiers,
             is_group=False,
-            guid_to_text=guid_to_text,
+            guid_to_content=guid_to_content,
             attachment_cache=attachment_cache,
         )
         training_messages.extend(training_msgs)
@@ -300,11 +392,6 @@ async def collect_group_training_messages(
     log.info(f"Fetching messages from {len(all_chat_identifiers)} chat identifiers...")
     messages = await get_messages_by_chat_identifiers(all_chat_identifiers)
 
-    # Collect all thread_originator_guids for batch lookup (actual inline replies)
-    reply_guids = [msg.thread_originator_guid for msg in messages if msg.thread_originator_guid]
-    guid_to_text = await get_message_texts_by_guids(reply_guids) if reply_guids else {}
-    log.info(f"Resolved {len(guid_to_text)} inline reply references")
-
     # Collect all attachment GUIDs for batch lookup
     attachment_guids = []
     for msg in messages:
@@ -313,10 +400,14 @@ async def collect_group_training_messages(
     attachment_cache = await get_cached_descriptions(attachment_guids) if attachment_guids else {}
     log.info(f"Loaded {len(attachment_cache)} cached attachment descriptions")
 
+    # Build guid_to_content mapping for reply/reaction lookups
+    guid_to_content = build_guid_to_content(messages, attachment_cache)
+    log.info(f"Built content mapping for {len(guid_to_content)} messages")
+
     training_messages = []
     for msg in messages:
-        # Skip messages without text AND without attachments
-        if not msg.text and not msg.attachments:
+        # Skip messages without text AND without attachments AND not a reaction
+        if not msg.text and not msg.attachments and not is_reaction(msg):
             continue
 
         # Get participants for this chat
@@ -328,7 +419,7 @@ async def collect_group_training_messages(
             user_identifiers,
             is_group=True,
             group_participants=participants,
-            guid_to_text=guid_to_text,
+            guid_to_content=guid_to_content,
             attachment_cache=attachment_cache,
         )
         training_messages.extend(training_msgs)

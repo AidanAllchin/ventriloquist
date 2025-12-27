@@ -2,7 +2,7 @@
 File: database/messages.py
 Author: Aidan Allchin
 Created: 2025-12-23
-Last Modified: 2025-12-23
+Last Modified: 2025-12-27
 """
 
 from datetime import datetime
@@ -58,8 +58,9 @@ async def sync_batch_to_local_db(batch: List[MessageRecord]) -> int:
                     recipient_id, is_from_me, service, chat_identifier,
                     is_group_chat, group_chat_name, group_chat_participants,
                     has_attachments, is_read, read_timestamp, delivered_timestamp,
-                    reply_to_guid, thread_originator_guid, is_audio_message, attachments
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    reply_to_guid, thread_originator_guid, is_audio_message, attachments,
+                    associated_message_type, associated_message_guid
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(guid) DO UPDATE SET
                     text = excluded.text,
                     is_read = excluded.is_read,
@@ -86,6 +87,8 @@ async def sync_batch_to_local_db(batch: List[MessageRecord]) -> int:
                 msg.thread_originator_guid,
                 1 if msg.is_audio_message else 0,
                 attachments_json,
+                msg.associated_message_type,
+                msg.associated_message_guid,
             ))
         await conn.commit()
     return len(batch)
@@ -195,7 +198,9 @@ async def get_message_texts_by_guids(guids: List[str], batch_size: int = 500) ->
 
     return result
 
-async def detect_user_identifiers_from_db(exclude_identifiers: set[str] = None) -> set[str]:
+async def detect_user_identifiers_from_db(
+    exclude_identifiers: Optional[set[str]] = None
+) -> set[str]:
     """
     Detect user identifiers from the database.
 

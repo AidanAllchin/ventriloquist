@@ -45,6 +45,8 @@ class MessageRecord(BaseModel):
     date_delivered: Optional[datetime] = Field(None, description="When message was delivered")
     reply_to_guid: Optional[str] = Field(None, description="GUID of message this replies to")
     thread_originator_guid: Optional[str] = Field(None, description="GUID of original message in thread")
+    associated_message_type: Optional[int] = Field(None, description="Reaction type (2000=Loved, 2001=Liked, etc.)")
+    associated_message_guid: Optional[str] = Field(None, description="GUID of message being reacted to (stripped of p:0/ prefix)")
 
     def to_db_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for database insertion"""

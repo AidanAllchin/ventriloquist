@@ -56,6 +56,8 @@ async def init_local_database() -> None:
                 thread_originator_guid TEXT,
                 is_audio_message INTEGER NOT NULL DEFAULT 0,
                 attachments TEXT,  -- JSON array of attachment info
+                associated_message_type INTEGER,  -- Reaction type (2000=Loved, etc.)
+                associated_message_guid TEXT,     -- GUID of message being reacted to
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(guid)
             )
