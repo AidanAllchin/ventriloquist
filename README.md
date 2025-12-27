@@ -24,31 +24,34 @@ uv sync
 uv run python main.py
 ```
 
-The pipeline has 3 steps:
+The pipeline has 4 steps:
 
-| Step | Name                  | Requirements    |
-| ---- | --------------------- | --------------- |
-| 1    | Collect iMessage data | macOS only      |
-| 2    | Preprocess data       | Any platform    |
-| 3    | Train model           | GPU recommended |
+| Step | Name                    | Requirements              |
+| ---- | ----------------------- | ------------------------- |
+| 1    | Collect iMessage data   | macOS only                |
+| 1.5  | Process attachments     | macOS + Gemini API key    |
+| 2    | Preprocess data         | Any platform              |
+| 3    | Train model             | GPU recommended           |
 
 Run individually or all at once:
 
 ```bash
-uv run python main.py 1    # Collect
-uv run python main.py 2    # Preprocess
-uv run python main.py 3    # Train
-uv run python main.py a    # Run all
+uv run python main.py 1      # Collect
+uv run python main.py 1.5    # Process attachments (optional)
+uv run python main.py 2      # Preprocess
+uv run python main.py 3      # Train
+uv run python main.py a      # Run all
 ```
 
 ## Cross-Platform Workflow
 
-iMessage collection requires macOS. Training works best on Linux/Windows with a GPU.
+iMessage collection and attachment processing require macOS. Training requires unsloth. Use a Linux/Windows machine with a GPU.
 
 **On macOS:**
 
 ```bash
-uv run python main.py 1
+uv run python main.py 1      # Collect messages
+uv run python main.py 1.5    # Process attachments (optional, requires GEMINI_API_KEY)
 ```
 
 **Transfer data to Linux/Windows:**
@@ -77,6 +80,21 @@ Extracts messages from macOS iMessage database (`~/Library/Messages/chat.db`).
 
 **Output:** `data/messages.db`
 
+### Step 1.5: Attachment Processing (Optional)
+
+Generates descriptions for images, videos, and voice memos using Gemini 2.0 Flash.
+
+- **Images**: 1-3 sentence visual descriptions
+- **Videos**: Scene and action descriptions (first 15 seconds)
+- **Voice memos**: Full transcription
+- **Documents**: PDF summaries
+- Converts HEIC/Live Photos to JPEG, handles format compatibility
+- Caches results in `attachment_descriptions` table
+
+Requires `GEMINI_API_KEY` in `.env`. Skipped attachments get filename as description.
+
+**Supported formats:** JPEG, PNG, HEIC, MP4, MOV, PDF, voice memos (CAF/M4A)
+
 ### Step 2: Preprocessing
 
 Transforms raw messages into training-ready format:
@@ -89,12 +107,19 @@ Transforms raw messages into training-ready format:
 
 ```json
 {"type": "dm", "members": ["Aidan Allchin", "John"], "start": "2024-03-15"}
-{"name": "Aidan Allchin", "delta": "<1m>", "content": "hey what's up"}
-{"name": "John", "delta": "<5m>", "content": "not much, you?"}
-{"name": "Aidan Allchin", "delta": "<1h>", "content": "[replying to \"not much, you?\"] all good"}
+{"name": "Aidan Allchin", "delta": "<1m", "reply_to": null, "content_type": "text", "text": "hey what's up"}
+{"name": "John", "delta": "<5m", "reply_to": null, "content_type": "image", "text": "A sunset photo over the ocean"}
+{"name": "Aidan Allchin", "delta": "<1m", "reply_to": "A sunset photo over the ocean", "content_type": "text", "text": "beautiful!"}
+{"name": "John", "delta": "<1m", "reply_to": "beautiful!", "content_type": "reaction", "text": "Loved"}
 ```
 
-**Time delta buckets:** `<1m>`, `<5m>`, `<1h>`, `<12h>`, `<1d>`, `1d+`
+**Fields:**
+
+- `name`: Contact who sent the message
+- `delta`: Time since previous message (`<1m`, `<5m`, `<1h`, `<12h`, `<1d`, `1d+`)
+- `reply_to`: Truncated text of message being replied to, or `null`
+- `content_type`: `text`, `image`, `video`, `audio`, `document`, `reaction`, `file`, `contact`, `location`
+- `text`: Message content or attachment description
 
 ### Step 3: Training
 
@@ -229,6 +254,7 @@ MY_NAME="Your Name"
 
 # Optional
 USER_IDENTIFIERS=+1234567890,you@email.com  # Auto-detected if not set
+GEMINI_API_KEY=your_key_here                 # For attachment processing (step 1.5)
 WANDB_API_KEY=your_key_here                  # Or run `wandb login`
 ```
 
@@ -239,6 +265,11 @@ WANDB_API_KEY=your_key_here                  # Or run `wandb login`
 ├── src/
 │   ├── collection/            # iMessage extraction (macOS)
 │   │   └── imessage_logger.py
+│   ├── gemini/                # Attachment processing
+│   │   ├── describe.py        # Orchestrator for attachment descriptions
+│   │   ├── client.py          # Gemini API client with rate limiting
+│   │   ├── convert.py         # Format conversion (HEIC, video trim, etc.)
+│   │   └── content_types.py   # MIME type mapping
 │   ├── preprocessing/         # Training data generation
 │   │   ├── make_training_messages.py
 │   │   └── generate_windows.py

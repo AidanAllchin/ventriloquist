@@ -15,9 +15,10 @@ Ventriloquist is a personality modeling system that fine-tunes LLMs on iMessage 
 uv run python main.py
 
 # Run specific steps
-uv run python main.py 1  # Collect iMessage data (macOS only)
-uv run python main.py 2  # Preprocess: create messages, windows, export JSONL
-uv run python main.py 3  # Train model (requires GPU)
+uv run python main.py 1    # Collect iMessage data (macOS only)
+uv run python main.py 1.5  # Process attachments via Gemini (macOS, optional)
+uv run python main.py 2    # Preprocess: create messages, windows, export JSONL
+uv run python main.py 3    # Train model (requires GPU)
 
 # Run all steps
 uv run python main.py a
@@ -34,6 +35,8 @@ iMessage DB (~/Library/Messages/chat.db)
     ↓
 Collection (imessage_logger.py) → messages.db
     ↓
+Gemini Processing (describe.py) → attachment_descriptions table (optional)
+    ↓
 Preprocessing (make_training_messages.py) → TrainingMessage objects
     ↓
 Storage (training_data.py) → training_messages table
@@ -46,7 +49,8 @@ Export → training_windows.jsonl
 ### Module Purposes
 
 - **`src/collection/`**: Extracts messages from macOS iMessage database with async batch processing
-- **`src/database/`**: SQLite operations via aiosqlite. Key tables: `text_messages`, `training_messages`, `training_windows`
+- **`src/gemini/`**: Generates attachment descriptions via Gemini 2.0 Flash (images, videos, voice memos, PDFs)
+- **`src/database/`**: SQLite operations via aiosqlite. Key tables: `text_messages`, `training_messages`, `training_windows`, `attachment_descriptions`
 - **`src/preprocessing/`**: Transforms raw messages into training format with sliding window generation
 - **`src/models/`**: Pydantic models for type-safe data handling
 - **`src/training/`**: LoRA training code
@@ -70,12 +74,19 @@ Export → training_windows.jsonl
 **Messages (one JSON per line):**
 
 ```json
-{"name": "Aidan Allchin", "delta": "<1m", "content": "hey how are you"}
-{"name": "Contact Name", "delta": "<5m", "content": "doing well, you?"}
-{"name": "Aidan Allchin", "delta": "<1h", "content": "[replying to \"doing well, you?\"] great thanks!"}
+{"name": "Aidan Allchin", "delta": "<1m", "reply_to": null, "content_type": "text", "text": "hey how are you"}
+{"name": "Contact Name", "delta": "<5m", "reply_to": null, "content_type": "image", "text": "A sunset over the ocean"}
+{"name": "Aidan Allchin", "delta": "<1m", "reply_to": "A sunset over the ocean", "content_type": "text", "text": "beautiful!"}
+{"name": "Contact Name", "delta": "<1m", "reply_to": "beautiful!", "content_type": "reaction", "text": "Loved"}
 ```
 
-**Time delta buckets:** `<1m`, `<5m`, `<1h`, `<12h`, `<1d`, `1d+`
+**Message fields:**
+
+- `name`: Contact who sent the message
+- `delta`: Time since previous message (`<1m`, `<5m`, `<1h`, `<12h`, `<1d`, `1d+`)
+- `reply_to`: Truncated text of message being replied to (max 50 chars), or `null`
+- `content_type`: `text`, `image`, `video`, `audio`, `document`, `reaction`, `file`, `contact`, `location`
+- `text`: Message content or attachment description
 
 Group chats use `"type": "group"` in header.
 
@@ -100,15 +111,17 @@ Optional:
 
 ```
 USER_IDENTIFIERS=+1234567890,email@example.com  # Auto-detected if not set
-WANDB_API_KEY=your_key_here  # Or run `wandb login` once
+GEMINI_API_KEY=your_key_here  # For attachment processing (step 1.5)
+WANDB_API_KEY=your_key_here   # Or run `wandb login` once
 ```
 
 ## Database Schema
 
-Three main tables:
+Four main tables:
 
-- `text_messages`: Raw messages with full threading info
-- `training_messages`: Preprocessed messages (chat_id, from_contact, timestamp, content, chat_members)
+- `text_messages`: Raw messages with full threading info, attachments JSON, reaction fields
+- `attachment_descriptions`: Cached Gemini descriptions (content_type, description, error)
+- `training_messages`: Preprocessed messages (chat_id, from_contact, timestamp, content, content_type, reply_to_text, chat_members)
 - `training_windows`: Rendered conversation windows ready for training
 
 ## Design Decisions
@@ -117,8 +130,10 @@ Three main tables:
 - **Completion model**: Single LoRA learns entire social graph; identity via `"name":` field in JSON
 - **Sliding windows**: Every message gets its own 100-message window (stride 1, maximum overlap)
 - **Per-message time deltas**: Each message carries a `delta` field; model learns response timing as personality trait
-- **JSON as pseudo-special-tokens**: Field names (`"name":`, `"content":`) provide unambiguous boundaries without custom tokenizer
+- **JSON as pseudo-special-tokens**: Field names (`"name":`, `"text":`, `"reply_to":`) provide unambiguous boundaries without custom tokenizer
 - **Loss masking**: Only compute loss on final message of each window; ensures training matches inference (full context → predict next)
+- **Reactions as messages**: iMessage tapbacks (Loved, Liked, etc.) become `content_type: "reaction"` with `reply_to` pointing to the reacted message
+- **Attachment descriptions**: Gemini 2.0 Flash generates text descriptions for images/videos/audio, enabling the model to understand media context
 
 ## Training
 
