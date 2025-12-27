@@ -173,7 +173,7 @@ def main():
     # Load model and tokenizer
     if config.continue_from:
         # Continue training from a saved adapter
-        from unsloth import FastLanguageModel
+        from unsloth import FastLanguageModel  # type: ignore
         log.info(f"Continuing training from: {config.continue_from}")
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=config.continue_from,
@@ -243,6 +243,7 @@ def main():
         weight_decay=config.weight_decay,
         warmup_ratio=config.warmup_ratio,
         max_grad_norm=config.max_grad_norm,
+        lr_scheduler_type=config.lr_scheduler_type,
         # Logging
         logging_steps=config.logging_steps,
         report_to=config.report_to,
@@ -284,6 +285,7 @@ def main():
     log.info(f"  Batch size: {config.batch_size} x {config.gradient_accumulation_steps} = {config.effective_batch_size}")
     log.info(f"  Steps per epoch: ~{len(train_dataset) // config.effective_batch_size:,}")
     log.info(f"  Learning rate: {config.learning_rate}")
+    log.info(f"  LR scheduler: {config.lr_scheduler_type}")
 
     trainer.train(resume_from_checkpoint=True if config.resume else None)
 

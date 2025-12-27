@@ -40,6 +40,7 @@ class TrainingConfig:
     warmup_ratio: float = 0.03
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
+    lr_scheduler_type: str = "cosine"  # cosine annealing for better fine-tuning
 
     # Data
     data_path: Path = field(default_factory=lambda: Path("data/training_windows.jsonl"))
@@ -88,4 +89,5 @@ class TrainingConfig:
             "num_epochs": self.num_epochs,
             "warmup_ratio": self.warmup_ratio,
             "weight_decay": self.weight_decay,
+            "lr_scheduler_type": self.lr_scheduler_type,
         }
