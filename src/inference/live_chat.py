@@ -7,7 +7,7 @@ interactive chat with model predictions.
 File: inference/live_chat.py
 Author: Aidan Allchin
 Created: 2025-12-26
-Last Modified: 2025-12-26
+Last Modified: 2025-12-27
 """
 
 import json
@@ -199,7 +199,7 @@ def _generate_continuation(
         stop_on_name: Stop generating when this person speaks (e.g., MY_NAME)
 
     Returns:
-        List of generated message dicts with name, delta, content.
+        List of generated message dicts with name, delta, content_type, text.
     """
     generated = []
     current_prompt = prompt
@@ -265,7 +265,7 @@ def _generate_continuation(
                 msg = json.loads(line)
 
                 # Validate it has expected fields
-                if "name" not in msg or "content" not in msg:
+                if "name" not in msg or "text" not in msg:
                     continue
 
                 # Check if we should stop (model predicts user's turn)
@@ -499,19 +499,19 @@ def live_chat(adapter_path: Path):
                 for resp in responses:
                     name = resp.get("name", "???")
                     delta = resp.get("delta", "")
-                    content = resp.get("content", "")
+                    msg_text = resp.get("text", "")
 
                     # Color based on member
                     member_idx = members.index(name) if name in members else 0
                     color = colors[member_idx % len(colors)]
 
-                    console.print(f"  [bold {color}]{name}[/] [dim]{delta}[/]: {content}")
+                    console.print(f"  [bold {color}]{name}[/] [dim]{delta}[/]: {msg_text}")
 
                     # Add to context
                     context_messages.append(
                         RawMessage(
                             guid=f"gen-{datetime.now(timezone.utc).timestamp()}",
-                            text=content,
+                            text=msg_text,
                             timestamp=datetime.now(timezone.utc),
                             sender=name,
                             is_from_me=(name == MY_NAME),
@@ -599,7 +599,7 @@ def live_chat(adapter_path: Path):
                 for resp in responses:
                     name = resp.get("name", "???")
                     delta = resp.get("delta", "")
-                    content = resp.get("content", "")
+                    msg_text = resp.get("text", "")
 
                     # Color based on member for groups, green for DMs
                     if target_name:
@@ -609,13 +609,13 @@ def live_chat(adapter_path: Path):
                         member_idx = other_members.index(name) if name in other_members else 0
                         color = colors[member_idx % len(colors)]
 
-                    console.print(f"  [bold {color}]{name}[/] [dim]{delta}[/]: {content}")
+                    console.print(f"  [bold {color}]{name}[/] [dim]{delta}[/]: {msg_text}")
 
                     # Add to context
                     context_messages.append(
                         RawMessage(
                             guid=f"gen-{datetime.now(timezone.utc).timestamp()}",
-                            text=content,
+                            text=msg_text,
                             timestamp=datetime.now(timezone.utc),
                             sender=name,
                             is_from_me=False,

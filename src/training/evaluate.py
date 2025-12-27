@@ -27,10 +27,9 @@ from typing import Dict, List, Optional
 
 import torch
 from tqdm import tqdm
-from unsloth import FastLanguageModel
 
 from .data import load_windows, train_eval_split, create_dataset
-from .inference import generate_response, build_prompt
+from ..inference import generate_response, load_model
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,24 +40,10 @@ log = logging.getLogger(__name__)
 VALID_DELTAS = {"<1m>", "<5m>", "<1h>", "<12h>", "<1d>", "1d+"}
 BASE_MODEL = "unsloth/Qwen3-8B-Base"
 
-
-def load_model(adapter_path: Path, max_seq_length: int = 4096):
-    """Load fine-tuned model with LoRA adapter."""
-    log.info(f"Loading fine-tuned model from: {adapter_path}")
-
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=str(adapter_path),
-        max_seq_length=max_seq_length,
-        dtype=None,
-        load_in_4bit=False,
-    )
-
-    FastLanguageModel.for_inference(model)
-    return model, tokenizer
-
-
 def load_base_model(max_seq_length: int = 4096):
     """Load the original base model without any fine-tuning."""
+    from unsloth import FastLanguageModel  # type: ignore
+    
     log.info(f"Loading base model: {BASE_MODEL}")
 
     model, tokenizer = FastLanguageModel.from_pretrained(
@@ -148,7 +133,7 @@ def compare_window(
         "target_matches_expected": actual_target == expected["name"],
         "finetuned": {
             "delta": finetuned_response.delta if finetuned_response else None,
-            "content": finetuned_response.content if finetuned_response else None,
+            "text": finetuned_response.text if finetuned_response else None,
             "valid": finetuned_response is not None,
         },
     }
@@ -167,7 +152,7 @@ def compare_window(
         )
         result["base"] = {
             "delta": base_response.delta if base_response else None,
-            "content": base_response.content if base_response else None,
+            "text": base_response.text if base_response else None,
             "valid": base_response is not None,
         }
 
@@ -182,7 +167,7 @@ def print_comparison(result: Dict):
 
     if result.get("last_context"):
         last = result["last_context"]
-        print(f"Last message: {last['name']}: {last['content'][:80]}...")
+        print(f"Last message: {last['name']}: {last['text'][:80]}...")
 
     print("-" * 60)
     print(f"Target: {result['target_used']}", end="")
@@ -193,12 +178,12 @@ def print_comparison(result: Dict):
 
     print("-" * 60)
     exp = result["expected"]
-    print(f"EXPECTED [{exp['delta']}]: {exp['content']}")
+    print(f"EXPECTED [{exp['delta']}]: {exp['text']}")
 
     print("-" * 60)
     ft = result["finetuned"]
     if ft["valid"]:
-        print(f"FINETUNED [{ft['delta']}]: {ft['content']}")
+        print(f"FINETUNED [{ft['delta']}]: {ft['text']}")
     else:
         print("FINETUNED: [generation failed]")
 
@@ -206,7 +191,7 @@ def print_comparison(result: Dict):
         print("-" * 60)
         base = result["base"]
         if base["valid"]:
-            print(f"BASE [{base['delta']}]: {base['content']}")
+            print(f"BASE [{base['delta']}]: {base['text']}")
         else:
             print("BASE: [generation failed]")
 
@@ -302,7 +287,7 @@ def evaluate_generation_quality(
             json_valid += 1
             if response.delta in VALID_DELTAS:
                 delta_valid += 1
-            if response.content.strip():
+            if response.text.strip():
                 content_nonempty += 1
 
     n = len(samples)

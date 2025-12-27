@@ -2,7 +2,7 @@
 File: database/create_tables.py
 Author: Aidan Allchin
 Created: 2025-12-23
-Last Modified: 2025-12-23
+Last Modified: 2025-12-27
 """
 
 import aiosqlite
@@ -110,6 +110,7 @@ async def init_local_database() -> None:
                 from_contact TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
                 content TEXT NOT NULL,
+                content_type TEXT NOT NULL DEFAULT 'text',  -- text, image, video, audio, document, file, location, contact
                 is_group_chat INTEGER NOT NULL,
                 chat_members TEXT NOT NULL,  -- JSON array
                 reply_to_text TEXT,
@@ -132,11 +133,25 @@ async def init_local_database() -> None:
             )
         """)
 
+        # Attachment descriptions cache (for Gemini-generated descriptions)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS attachment_descriptions (
+                attachment_guid TEXT PRIMARY KEY,
+                content_type TEXT NOT NULL,  -- image, video, audio, document, file, location, contact
+                description TEXT,            -- Gemini-generated description or transcription
+                mime_type TEXT,
+                file_exists INTEGER DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                error TEXT                   -- Error message if processing failed
+            )
+        """)
+
         # Create indexes for faster queries
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON text_messages(timestamp)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_identifier ON text_messages(chat_identifier)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_training_msg_chat_ts ON training_messages(chat_id, timestamp)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_window_chat ON training_windows(chat_id)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_attachment_desc_type ON attachment_descriptions(content_type)")
 
         await conn.commit()
         log.info(f"Local database initialized at {LOCAL_DB_PATH}")

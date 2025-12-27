@@ -1,10 +1,10 @@
 """
+Database operations for training data storage and retrieval.
+
 File: database/training_data.py
 Author: Aidan Allchin
 Created: 2025-12-24
-Last Modified: 2025-12-24
-
-Database operations for training data storage and retrieval.
+Last Modified: 2025-12-27
 """
 
 import json
@@ -37,15 +37,16 @@ async def store_training_messages(messages: List[TrainingMessage]) -> int:
             await conn.execute(
                 """
                 INSERT INTO training_messages (
-                    chat_id, from_contact, timestamp, content,
+                    chat_id, from_contact, timestamp, content, content_type,
                     is_group_chat, chat_members, reply_to_text, thread_originator_guid
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     msg.chat_id,
                     msg.from_contact,
                     msg.timestamp,
                     msg.content,
+                    msg.content_type,
                     1 if msg.is_group_chat else 0,
                     json.dumps(msg.chat_members),
                     msg.reply_to_text,
@@ -73,7 +74,7 @@ async def get_training_messages_by_chat(chat_id: str) -> List[TrainingMessage]:
     async with aiosqlite.connect(LOCAL_DB_PATH) as conn:
         async with conn.execute(
             """
-            SELECT chat_id, from_contact, timestamp, content,
+            SELECT chat_id, from_contact, timestamp, content, content_type,
                    is_group_chat, chat_members, reply_to_text, thread_originator_guid
             FROM training_messages
             WHERE chat_id = ?
@@ -88,10 +89,11 @@ async def get_training_messages_by_chat(chat_id: str) -> List[TrainingMessage]:
                         from_contact=row[1],
                         timestamp=row[2],
                         content=row[3],
-                        is_group_chat=bool(row[4]),
-                        chat_members=json.loads(row[5]),
-                        reply_to_text=row[6],
-                        thread_originator_guid=row[7],
+                        content_type=row[4],
+                        is_group_chat=bool(row[5]),
+                        chat_members=json.loads(row[6]),
+                        reply_to_text=row[7],
+                        thread_originator_guid=row[8],
                     )
                 )
 

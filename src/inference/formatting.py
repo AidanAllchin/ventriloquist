@@ -6,7 +6,7 @@ Converts raw messages to the JSON-per-line format used for training.
 File: inference/formatting.py
 Author: Aidan Allchin
 Created: 2025-12-26
-Last Modified: 2025-12-26
+Last Modified: 2025-12-27
 """
 
 import json
@@ -55,12 +55,18 @@ def build_header(chat_type: str, members: List[str], start_date: Optional[str] =
     return json.dumps(header, ensure_ascii=False)
 
 
-def format_message(name: str, delta: str, content: str) -> str:
+def format_message(
+    name: str,
+    delta: str,
+    text: str,
+    content_type: str = "text"
+) -> str:
     """Format a single message as JSON."""
     msg = {
         "name": name,
         "delta": delta,
-        "content": content,
+        "content_type": content_type,
+        "text": text,
     }
     return json.dumps(msg, ensure_ascii=False)
 

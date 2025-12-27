@@ -4,11 +4,12 @@ Shared data models for the Ventriloquist project.
 
 from .contact import Contact
 from .group_chat import GroupChatStatsRecord, ParticipantActivityStatsRecord
-from .message import MessageRecord
+from .message import MessageRecord, AttachmentInfo
 from .message_stats import MessageStatsRecord
 from .training_message import TrainingMessage, compute_delta_bucket
 
 __all__ = [
+    "AttachmentInfo",
     "Contact",
     "GroupChatStatsRecord",
     "MessageRecord",

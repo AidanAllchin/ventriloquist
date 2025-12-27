@@ -5,7 +5,7 @@ iMessage logger that logs messages to an SQLite database
 File: collection/imessage_logger.py
 Author: Aidan Allchin
 Created: 2025-10-02
-Last Modified: 2025-12-23
+Last Modified: 2025-12-27
 """
 
 import os
@@ -44,6 +44,7 @@ from ..models import (
     MessageStatsRecord,
     GroupChatStatsRecord,
     ParticipantActivityStatsRecord,
+    AttachmentInfo,
 )
 
 # Load environment variables
@@ -206,7 +207,7 @@ class iMessageLogger:
         since_imessage_ts = self._datetime_to_imessage_timestamp(since_timestamp)
 
         query = """
-        SELECT DISTINCT
+        SELECT
             message.ROWID,
             message.guid,
             message.text,
@@ -224,15 +225,28 @@ class iMessageLogger:
             message.cache_has_attachments,
             message.is_read,
             message.reply_to_guid,
-            message.thread_originator_guid
+            message.thread_originator_guid,
+            message.is_audio_message,
+            GROUP_CONCAT(attachment.guid, '|||') as attachment_guids,
+            GROUP_CONCAT(attachment.mime_type, '|||') as attachment_mimes,
+            GROUP_CONCAT(attachment.filename, '|||') as attachment_paths,
+            GROUP_CONCAT(attachment.uti, '|||') as attachment_utis,
+            GROUP_CONCAT(attachment.transfer_name, '|||') as attachment_names,
+            GROUP_CONCAT(attachment.is_sticker, '|||') as attachment_stickers
         FROM
             message
         LEFT JOIN
             handle ON message.handle_id = handle.ROWID
         LEFT JOIN
             chat ON message.cache_roomnames = chat.chat_identifier
+        LEFT JOIN
+            message_attachment_join ON message.ROWID = message_attachment_join.message_id
+        LEFT JOIN
+            attachment ON message_attachment_join.attachment_id = attachment.ROWID
         WHERE
             message.date > ?
+        GROUP BY
+            message.ROWID
         ORDER BY
             message.date ASC
         """
@@ -290,6 +304,37 @@ class iMessageLogger:
                         is_read = bool(row[15])
                         reply_to_guid = row[16]
                         thread_originator_guid = row[17]
+                        is_audio_message = bool(row[18])
+
+                        # Parse attachment data from GROUP_CONCAT fields
+                        attachments = None
+                        attachment_guids = row[19]
+                        if attachment_guids:
+                            attachment_mimes = row[20]
+                            attachment_paths = row[21]
+                            attachment_utis = row[22]
+                            attachment_names = row[23]
+                            attachment_stickers = row[24]
+
+                            # Split by delimiter and zip together
+                            guids = attachment_guids.split('|||')
+                            mimes = (attachment_mimes or '').split('|||') if attachment_mimes else [''] * len(guids)
+                            paths = (attachment_paths or '').split('|||') if attachment_paths else [''] * len(guids)
+                            utis = (attachment_utis or '').split('|||') if attachment_utis else [''] * len(guids)
+                            names = (attachment_names or '').split('|||') if attachment_names else [''] * len(guids)
+                            stickers = (attachment_stickers or '').split('|||') if attachment_stickers else ['0'] * len(guids)
+
+                            attachments = []
+                            for i, att_guid in enumerate(guids):
+                                if att_guid:  # Skip empty entries
+                                    attachments.append(AttachmentInfo(
+                                        guid=att_guid,
+                                        mime_type=mimes[i] if i < len(mimes) and mimes[i] else None,
+                                        uti=utis[i] if i < len(utis) and utis[i] else None,
+                                        filename=paths[i] if i < len(paths) and paths[i] else None,
+                                        transfer_name=names[i] if i < len(names) and names[i] else None,
+                                        is_sticker=bool(int(stickers[i])) if i < len(stickers) and stickers[i] else False,
+                                    ))
 
                         # Determine if group chat (style 43 = group, 45 = individual)
                         is_group_chat = chat_style == 43 if chat_style else False
@@ -347,6 +392,8 @@ class iMessageLogger:
                             group_chat_name=group_chat_name,
                             group_chat_participants=group_chat_participants,
                             has_attachments=has_attachments,
+                            is_audio_message=is_audio_message,
+                            attachments=attachments,
                             is_read=is_read,
                             date_read=date_read,
                             date_delivered=date_delivered,

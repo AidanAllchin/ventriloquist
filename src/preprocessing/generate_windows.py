@@ -7,7 +7,7 @@ WINDOW_SIZE previous messages as context.
 File: preprocessing/generate_windows.py
 Author: Aidan Allchin
 Created: 2025-12-24
-Last Modified: 2025-12-26
+Last Modified: 2025-12-27
 """
 
 from datetime import datetime, timedelta
@@ -165,7 +165,7 @@ async def generate_all_training_windows() -> int:
             # Get all messages for this participant set, across all chat IDs
             async with conn.execute(
                 """
-                SELECT chat_id, from_contact, timestamp, content,
+                SELECT chat_id, from_contact, timestamp, content, content_type,
                        is_group_chat, chat_members, reply_to_text, thread_originator_guid
                 FROM training_messages
                 WHERE chat_members = ?
@@ -181,10 +181,11 @@ async def generate_all_training_windows() -> int:
                             from_contact=row[1],
                             timestamp=row[2],
                             content=row[3],
-                            is_group_chat=bool(row[4]),
-                            chat_members=json.loads(row[5]),
-                            reply_to_text=row[6],
-                            thread_originator_guid=row[7],
+                            content_type=row[4],
+                            is_group_chat=bool(row[5]),
+                            chat_members=json.loads(row[6]),
+                            reply_to_text=row[7],
+                            thread_originator_guid=row[8],
                         )
                     )
 

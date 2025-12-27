@@ -10,7 +10,7 @@ Usage:
 File: inference/interactive.py
 Author: Aidan Allchin
 Created: 2025-12-24
-Last Modified: 2025-12-26
+Last Modified: 2025-12-27
 """
 
 import argparse
@@ -46,7 +46,8 @@ class GeneratedMessage:
 
     name: str
     delta: str
-    content: str
+    content_type: str
+    text: str
     raw: str  # Original generated text
 
 
@@ -88,7 +89,7 @@ def build_prompt(
     Build the full prompt for generation.
 
     Args:
-        context_messages: List of {"name": ..., "delta": ..., "content": ...}
+        context_messages: List of {"name": ..., "delta": ..., "content_type": ..., "text": ...}
         target_name: Who to generate for
         chat_type: "dm" or "group"
         members: Participant names (inferred from messages if not provided)
@@ -151,7 +152,8 @@ def parse_generated(raw_text: str, target_name: str) -> Optional[GeneratedMessag
         return GeneratedMessage(
             name=parsed.get("name", target_name),
             delta=parsed.get("delta", ""),
-            content=parsed.get("content", ""),
+            content_type=parsed.get("content_type", "text"),
+            text=parsed.get("text", ""),
             raw=raw_text,
         )
 
@@ -315,7 +317,7 @@ def interactive_mode(model, tokenizer):
                 for msg in context:
                     delta_style = "dim"
                     console.print(
-                        f"  [bold]{msg['name']}[/] [{delta_style}]{msg['delta']}[/]: {msg['content']}"
+                        f"  [bold]{msg['name']}[/] [{delta_style}]{msg['delta']}[/]: {msg['text']}"
                     )
             continue
 
@@ -358,19 +360,20 @@ def interactive_mode(model, tokenizer):
         if ": " in user_input and user_input.split(": ", 1)[0] in members:
             parts = user_input.split(": ", 1)
             name = parts[0]
-            content = parts[1]
+            msg_text = parts[1]
         else:
             name = sender_name
-            content = user_input
+            msg_text = user_input
 
         context.append({
             "name": name,
             "delta": "<5m",
-            "content": content,
+            "content_type": "text",
+            "text": msg_text,
         })
 
         # Show the input message
-        console.print(f"\n  [bold blue]{name}[/] [dim]<5m[/]: {content}")
+        console.print(f"\n  [bold blue]{name}[/] [dim]<5m[/]: {msg_text}")
 
         with console.status(f"[cyan]Generating response from {target_name}...[/]"):
             response = generate_response(
@@ -384,12 +387,13 @@ def interactive_mode(model, tokenizer):
 
         if response:
             console.print(
-                f"  [bold green]{target_name}[/] [dim]{response.delta}[/]: {response.content}\n"
+                f"  [bold green]{target_name}[/] [dim]{response.delta}[/]: {response.text}\n"
             )
             context.append({
                 "name": response.name,
                 "delta": response.delta,
-                "content": response.content,
+                "content_type": response.content_type,
+                "text": response.text,
             })
         else:
             console.print("[red]Failed to generate valid response.[/]\n")
@@ -428,7 +432,8 @@ def auto_mode(
         seed_json = json.dumps({
             "name": sender,
             "delta": "<1m",
-            "content": seed_message,
+            "content_type": "text",
+            "text": seed_message,
         }, ensure_ascii=False)
         prompt += seed_json + "\n"
         console.print(f"[bold blue]{sender}[/] [dim]<1m[/]: {seed_message}")
@@ -473,13 +478,13 @@ def auto_mode(
                     msg = json.loads(line)
                     name = msg.get("name", "???")
                     delta = msg.get("delta", "")
-                    content = msg.get("content", "")
+                    msg_text = msg.get("text", "")
 
                     # Color based on member index
                     member_idx = members.index(name) if name in members else 0
                     color = colors[member_idx % len(colors)]
 
-                    console.print(f"[bold {color}]{name}[/] [dim]{delta}[/]: {content}")
+                    console.print(f"[bold {color}]{name}[/] [dim]{delta}[/]: {msg_text}")
                     turn_count += 1
 
                     # Add to prompt for context

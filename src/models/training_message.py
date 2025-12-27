@@ -2,7 +2,7 @@
 File: models/training_message.py
 Author: Aidan Allchin
 Created: 2025-12-23
-Last Modified: 2025-12-24
+Last Modified: 2025-12-27
 """
 
 import json
@@ -43,7 +43,8 @@ class TrainingMessage(BaseModel):
     chat_id: str = Field(..., description="Unique identifier for the conversation")
     from_contact: str = Field(..., description="Name of contact who sent the message")
     timestamp: str = Field(..., description="UTC ISO timestamp")
-    content: str = Field(..., description="Message body")
+    content: str = Field(..., description="Message body or attachment description")
+    content_type: str = Field("text", description="Content type: text, image, video, audio, document, file, location, contact")
     is_group_chat: bool = Field(..., description="Whether this is a group chat message")
     chat_members: List[str] = Field(default_factory=list, description="List of all contact names in the chat")
     reply_to_text: Optional[str] = Field(None, description="Text of the message being replied to (truncated)")
@@ -57,7 +58,7 @@ class TrainingMessage(BaseModel):
             delta_bucket: Pre-computed time delta bucket (e.g., "<5m", "<1h")
 
         Returns:
-            JSON string: {"name": "...", "delta": "...", "content": "..."}
+            JSON string: {"name": "...", "delta": "...", "content_type": "...", "text": "..."}
         """
         # Build content with reply prefix if applicable
         if self.reply_to_text:
@@ -66,6 +67,11 @@ class TrainingMessage(BaseModel):
             full_content = self.content
 
         return json.dumps(
-            {"name": self.from_contact, "delta": delta_bucket, "content": full_content},
+            {
+                "name": self.from_contact,
+                "delta": delta_bucket,
+                "content_type": self.content_type,
+                "text": full_content,
+            },
             ensure_ascii=False,
         )

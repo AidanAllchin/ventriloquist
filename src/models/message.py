@@ -4,7 +4,7 @@ Message record model.
 File: models/message.py
 Author: Aidan Allchin
 Created: 2025-11-23
-Last Modified: 2025-12-23
+Last Modified: 2025-12-27
 """
 
 from datetime import datetime
@@ -12,6 +12,16 @@ from typing import List, Dict, Optional, Any
 
 from pydantic import BaseModel, Field, ConfigDict
 from rich.text import Text
+
+
+class AttachmentInfo(BaseModel):
+    """Information about a message attachment."""
+    guid: str = Field(..., description="Unique attachment identifier")
+    mime_type: Optional[str] = Field(None, description="MIME type (e.g., image/jpeg)")
+    uti: Optional[str] = Field(None, description="Uniform Type Identifier (e.g., public.jpeg)")
+    filename: Optional[str] = Field(None, description="Full path in ~/Library/Messages/Attachments/")
+    transfer_name: Optional[str] = Field(None, description="Original filename (for audio: song name)")
+    is_sticker: bool = Field(False, description="True if this is a sticker")
 
 
 class MessageRecord(BaseModel):
@@ -36,6 +46,8 @@ class MessageRecord(BaseModel):
     group_chat_name: Optional[str] = Field(None, description="User-visible chat name (can be NULL)")
     group_chat_participants: Optional[List[str]] = Field(None, description="List of all participant phone/email IDs in group chat")
     has_attachments: bool = Field(False, description="True if message has attachments")
+    is_audio_message: bool = Field(False, description="True for voice memos (set by iMessage)")
+    attachments: Optional[List[AttachmentInfo]] = Field(None, description="List of attachment metadata")
     is_read: bool = Field(False, description="Read status")
     date_read: Optional[datetime] = Field(None, description="When message was read")
     date_delivered: Optional[datetime] = Field(None, description="When message was delivered")
@@ -89,7 +101,7 @@ class MessageRecord(BaseModel):
             data["group_chat_participants"] = json.loads(data["group_chat_participants"])
 
         # Convert integer booleans to actual booleans
-        for bool_field in ["is_from_me", "is_group_chat", "has_attachments", "is_read"]:
+        for bool_field in ["is_from_me", "is_group_chat", "has_attachments", "is_audio_message", "is_read"]:
             if bool_field in data and isinstance(data[bool_field], int):
                 data[bool_field] = bool(data[bool_field])
 
