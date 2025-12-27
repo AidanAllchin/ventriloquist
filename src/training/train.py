@@ -76,6 +76,8 @@ def parse_args() -> TrainingConfig:
     parser.add_argument("--run_name", type=str, default=None)
     parser.add_argument("--no_wandb", action="store_true")
     parser.add_argument("--resume", action="store_true", help="Resume from latest checkpoint")
+    parser.add_argument("--continue_from", type=str, default=None,
+                        help="Continue training from a saved adapter (e.g., checkpoints/ventriloquist/final)")
 
     args = parser.parse_args()
 
@@ -169,10 +171,26 @@ def main():
         )
 
     # Load model and tokenizer
-    model, tokenizer = load_model_and_tokenizer(config)
-
-    # Apply LoRA
-    model = apply_lora(model, config)
+    if config.continue_from:
+        # Continue training from a saved adapter
+        from unsloth import FastLanguageModel
+        log.info(f"Continuing training from: {config.continue_from}")
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=config.continue_from,
+            max_seq_length=config.max_seq_length,
+            dtype=None,
+            load_in_4bit=config.load_in_4bit,
+            load_in_8bit=config.load_in_8bit,
+        )
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.pad_token_id = tokenizer.eos_token_id
+        # LoRA is already in the loaded model, just enable gradient checkpointing
+        FastLanguageModel.for_training(model)
+    else:
+        # Fresh training from base model
+        model, tokenizer = load_model_and_tokenizer(config)
+        model = apply_lora(model, config)
 
     # Load and split data
     log.info(f"Loading data from {config.data_path}")

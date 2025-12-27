@@ -4,7 +4,7 @@ Training configuration for Ventriloquist.
 File: training/config.py
 Author: Aidan Allchin
 Created: 2025-12-24
-Last Modified: 2025-12-25
+Last Modified: 2025-12-26
 """
 
 from dataclasses import dataclass, field
@@ -58,6 +58,7 @@ class TrainingConfig:
     wandb_project: str = "ventriloquist"
     run_name: Optional[str] = None
     resume: bool = False  # Resume from latest checkpoint
+    continue_from: Optional[str] = None  # Continue training from saved adapter
 
     def __post_init__(self):
         # Ensure paths are Path objects

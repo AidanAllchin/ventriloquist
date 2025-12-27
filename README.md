@@ -120,10 +120,36 @@ Override defaults:
 uv run python -m src.training.train --lora_r 64 --learning_rate 1e-4
 ```
 
+**Continue training from a checkpoint:**
+
+```bash
+# Continue training with modified data or additional epochs
+uv run python -m src.training.train --continue_from checkpoints/ventriloquist/final --num_epochs 2
+
+# Resume interrupted training (same data, restores optimizer state)
+uv run python -m src.training.train --resume
+```
+
+**Quantization for limited VRAM:**
+
+```bash
+uv run python -m src.training.train --load_in_8bit  # ~8GB VRAM
+uv run python -m src.training.train --load_in_4bit  # ~4GB VRAM
+```
+
 ## Inference
 
 ```bash
 uv run python -m src.training.inference
+
+# With quantization for limited VRAM (24GB GPU)
+uv run python -m src.training.inference --load_in_8bit
+
+# For 16GB GPUs
+uv run python -m src.training.inference --load_in_4bit
+
+# Load specific checkpoint
+uv run python -m src.training.inference --adapter_path checkpoints/ventriloquist/checkpoint-1600
 ```
 
 Commands:
