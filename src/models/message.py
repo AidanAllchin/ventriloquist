@@ -13,15 +13,7 @@ from typing import List, Dict, Optional, Any
 from pydantic import BaseModel, Field, ConfigDict
 from rich.text import Text
 
-
-class AttachmentInfo(BaseModel):
-    """Information about a message attachment."""
-    guid: str = Field(..., description="Unique attachment identifier")
-    mime_type: Optional[str] = Field(None, description="MIME type (e.g., image/jpeg)")
-    uti: Optional[str] = Field(None, description="Uniform Type Identifier (e.g., public.jpeg)")
-    filename: Optional[str] = Field(None, description="Full path in ~/Library/Messages/Attachments/")
-    transfer_name: Optional[str] = Field(None, description="Original filename (for audio: song name)")
-    is_sticker: bool = Field(False, description="True if this is a sticker")
+from .attachment import AttachmentInfo
 
 
 class MessageRecord(BaseModel):
@@ -99,6 +91,13 @@ class MessageRecord(BaseModel):
         # Parse JSON string for group_chat_participants
         if isinstance(data.get("group_chat_participants"), str):
             data["group_chat_participants"] = json.loads(data["group_chat_participants"])
+
+        # Parse JSON string for attachments
+        if isinstance(data.get("attachments"), str):
+            attachments_data = json.loads(data["attachments"])
+            data["attachments"] = [AttachmentInfo(**a) for a in attachments_data]
+        elif data.get("attachments") is None:
+            data["attachments"] = None
 
         # Convert integer booleans to actual booleans
         for bool_field in ["is_from_me", "is_group_chat", "has_attachments", "is_audio_message", "is_read"]:

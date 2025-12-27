@@ -13,6 +13,10 @@ dependencies = [
     # Preprocessing
     "pandas>=2.0.0",
     "numpy>=1.24.0",
+    # Gemini integration for attachment descriptions
+    "google-genai>=1.0.0",
+    "pillow>=10.0.0",
+    "pillow-heif>=0.18.0",
     # Inference (works on all platforms including Mac)
     "transformers>=4.40.0",
     "peft>=0.10.0",

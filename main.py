@@ -13,6 +13,7 @@ import asyncio
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
@@ -21,6 +22,7 @@ from rich import box
 
 console = Console()
 
+load_dotenv()
 
 # Pipeline step definitions
 STEPS = {
@@ -28,6 +30,11 @@ STEPS = {
         "name": "Collect iMessage data",
         "description": "Extract messages from macOS iMessage database",
         "requires": "macOS",
+    },
+    "1.5": {
+        "name": "Describe attachments",
+        "description": "Generate descriptions for images/videos/audio via Gemini",
+        "requires": "GEMINI_API_KEY",
     },
     "2": {
         "name": "Preprocess data",
@@ -87,10 +94,10 @@ def show_menu():
     console.print(table)
     console.print()
     console.print("[dim]Commands:[/]")
-    console.print("  [cyan]1-3[/]     Run a pipeline step")
-    console.print("  [cyan]4[/]       Live Chat (inference with real context)")
-    console.print("  [cyan]a[/]       Run all pipeline steps (1-3)")
-    console.print("  [cyan]q[/]       Quit")
+    console.print("  [cyan]1, 1.5, 2, 3[/]  Run a pipeline step")
+    console.print("  [cyan]4[/]             Inference (interactive, auto, or live chat)")
+    console.print("  [cyan]a[/]             Run all pipeline steps (1, 1.5, 2, 3)")
+    console.print("  [cyan]q[/]             Quit")
     console.print()
 
 async def _run_step_1():
@@ -105,6 +112,47 @@ async def _run_step_1():
     await collect_data()
 
     console.print("[green]Collection complete![/]")
+
+
+async def _run_step_1_5():
+    """Generate descriptions for attachments using Gemini."""
+    from src.gemini import process_attachments
+    from src.database import get_processing_stats
+
+    # Show current stats
+    stats = await get_processing_stats()
+    if stats["total_cached"] > 0:
+        console.print(f"[dim]Already cached: {stats['total_cached']} attachments[/]")
+        console.print(f"[dim]  With description: {stats['with_description']}[/]")
+        console.print(f"[dim]  With error: {stats['with_error']}[/]")
+
+    # Dry run first to show what will be processed
+    console.print("[dim]Checking attachments to process...[/]")
+    dry_stats = await process_attachments(dry_run=True)
+
+    to_process = dry_stats.get("to_process", 0)
+    if to_process == 0:
+        console.print("[green]All attachments already cached![/]")
+        return
+
+    console.print(f"\n[bold]Attachments to process: {to_process}[/]")
+    by_type = dry_stats.get("by_type", {})
+    if isinstance(by_type, dict):
+        for ctype, count in sorted(by_type.items()):
+            console.print(f"  {ctype}: {count}")
+
+    console.print()
+    if not Confirm.ask(
+        f"Process {to_process} attachments?",
+        default=False,
+    ):
+        console.print("[dim]Skipped.[/]")
+        return
+
+    # Run for real
+    console.print()
+    await process_attachments(dry_run=False)
+
 
 async def _run_step_2():
     """Preprocess data: create training messages, generate windows, export."""
@@ -243,6 +291,9 @@ async def run_all_steps():
     console.rule("[bold]Step 1: Collect iMessage data")
     await _run_step_1()
 
+    console.rule("[bold]Step 1.5: Describe attachments")
+    await _run_step_1_5()
+
     console.rule("[bold]Step 2: Preprocess data")
     await _run_step_2()
 
@@ -259,6 +310,8 @@ async def run_single_step(step: str):
 
     if step == "1":
         await _run_step_1()
+    elif step == "1.5":
+        await _run_step_1_5()
     elif step == "2":
         await _run_step_2()
     elif step == "3":

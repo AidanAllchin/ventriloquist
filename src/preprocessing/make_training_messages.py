@@ -16,12 +16,14 @@ from dotenv import load_dotenv
 
 from ..database import (
     detect_user_identifiers_from_db,
+    get_cached_descriptions,
     get_group_chats_by_participants,
     get_message_texts_by_guids,
     get_messages_by_chat_identifiers,
     get_messages_with_identifiers,
 )
-from ..models import MessageRecord, TrainingMessage
+from ..gemini.content_types import get_content_type
+from ..models import MessageRecord, TrainingMessage, CachedDescription
 from .utils import create_identifier_to_contact_map, load_contacts
 
 log = logging.getLogger(__name__)
@@ -95,12 +97,13 @@ def convert_message_to_training(
     is_group: bool = False,
     group_participants: Optional[List[str]] = None,
     guid_to_text: Optional[Dict[str, str]] = None,
+    attachment_cache: Optional[Dict[str, CachedDescription]] = None,
 ) -> List[TrainingMessage]:
     """
     Convert a MessageRecord to TrainingMessage(s).
 
-    Splits messages containing newlines into separate TrainingMessages,
-    as iMessage often stores rapid-fire messages with \\n as a single message.
+    Creates TrainingMessages for attachments first, then text content.
+    Attachments use cached descriptions from Gemini processing.
 
     Args:
         msg: MessageRecord to convert
@@ -109,9 +112,10 @@ def convert_message_to_training(
         is_group: Whether this is a group chat message
         group_participants: List of participant identifiers for group chats
         guid_to_text: Mapping from GUID to message text for reply lookups
+        attachment_cache: Mapping from attachment GUID to cached description
 
     Returns:
-        List of TrainingMessage objects (usually 1, but more if content has newlines)
+        List of TrainingMessage objects (attachments first, then text if present)
     """
     # Determine sender
     if msg.is_from_me:
@@ -147,23 +151,58 @@ def convert_message_to_training(
         if original_text:
             reply_to_text = format_reply_context(original_text)
 
-    # Keep full content - escaping is handled by json.dumps when rendering
-    content = msg.text or ""
     chat_id = msg.chat_identifier or "unknown"
     timestamp = msg.timestamp.isoformat()
+    results = []
 
-    return [
-        TrainingMessage(
-            chat_id=chat_id,
-            from_contact=from_contact,  # type: ignore
-            timestamp=timestamp,
-            content=content,
-            is_group_chat=is_group,
-            chat_members=chat_members,
-            reply_to_text=reply_to_text,
-            thread_originator_guid=msg.thread_originator_guid,
+    # Process attachments first (if any)
+    if msg.attachments and attachment_cache:
+        for attachment in msg.attachments:
+            cached = attachment_cache.get(attachment.guid)
+            if cached and cached.description:
+                # Use cached description
+                content_type = cached.content_type
+                content = cached.description
+            else:
+                # No cached description - derive content_type and use placeholder
+                content_type = get_content_type(attachment.mime_type, attachment.uti)
+                # For audio files that aren't voice memos, use transfer_name
+                if content_type == "audio" and not msg.is_audio_message and attachment.transfer_name:
+                    content = attachment.transfer_name
+                else:
+                    content = "[NA]"
+
+            results.append(
+                TrainingMessage(
+                    chat_id=chat_id,
+                    from_contact=from_contact,  # type: ignore
+                    timestamp=timestamp,
+                    content=content,
+                    content_type=content_type,
+                    is_group_chat=is_group,
+                    chat_members=chat_members,
+                    reply_to_text=None,  # Reply context only applies to text
+                    thread_originator_guid=None,
+                )
+            )
+
+    # Add text message if present
+    if msg.text and msg.text.strip():
+        results.append(
+            TrainingMessage(
+                chat_id=chat_id,
+                from_contact=from_contact,  # type: ignore
+                timestamp=timestamp,
+                content=msg.text,
+                content_type="text",
+                is_group_chat=is_group,
+                chat_members=chat_members,
+                reply_to_text=reply_to_text,
+                thread_originator_guid=msg.thread_originator_guid,
+            )
         )
-    ]
+
+    return results
 
 
 async def collect_individual_training_messages(
@@ -190,10 +229,18 @@ async def collect_individual_training_messages(
     guid_to_text = await get_message_texts_by_guids(reply_guids) if reply_guids else {}
     log.info(f"Resolved {len(guid_to_text)} inline reply references")
 
+    # Collect all attachment GUIDs for batch lookup
+    attachment_guids = []
+    for msg in messages:
+        if msg.attachments:
+            attachment_guids.extend(a.guid for a in msg.attachments)
+    attachment_cache = await get_cached_descriptions(attachment_guids) if attachment_guids else {}
+    log.info(f"Loaded {len(attachment_cache)} cached attachment descriptions")
+
     training_messages = []
     for msg in messages:
-        # Skip messages without text
-        if not msg.text:
+        # Skip messages without text AND without attachments
+        if not msg.text and not msg.attachments:
             continue
 
         training_msgs = convert_message_to_training(
@@ -202,6 +249,7 @@ async def collect_individual_training_messages(
             user_identifiers,
             is_group=False,
             guid_to_text=guid_to_text,
+            attachment_cache=attachment_cache,
         )
         training_messages.extend(training_msgs)
 
@@ -257,10 +305,18 @@ async def collect_group_training_messages(
     guid_to_text = await get_message_texts_by_guids(reply_guids) if reply_guids else {}
     log.info(f"Resolved {len(guid_to_text)} inline reply references")
 
+    # Collect all attachment GUIDs for batch lookup
+    attachment_guids = []
+    for msg in messages:
+        if msg.attachments:
+            attachment_guids.extend(a.guid for a in msg.attachments)
+    attachment_cache = await get_cached_descriptions(attachment_guids) if attachment_guids else {}
+    log.info(f"Loaded {len(attachment_cache)} cached attachment descriptions")
+
     training_messages = []
     for msg in messages:
-        # Skip messages without text
-        if not msg.text:
+        # Skip messages without text AND without attachments
+        if not msg.text and not msg.attachments:
             continue
 
         # Get participants for this chat
@@ -273,6 +329,7 @@ async def collect_group_training_messages(
             is_group=True,
             group_participants=participants,
             guid_to_text=guid_to_text,
+            attachment_cache=attachment_cache,
         )
         training_messages.extend(training_msgs)
 

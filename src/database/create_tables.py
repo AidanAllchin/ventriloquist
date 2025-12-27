@@ -54,6 +54,8 @@ async def init_local_database() -> None:
                 delivered_timestamp TEXT,
                 reply_to_guid TEXT,
                 thread_originator_guid TEXT,
+                is_audio_message INTEGER NOT NULL DEFAULT 0,
+                attachments TEXT,  -- JSON array of attachment info
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(guid)
             )

@@ -37,14 +37,29 @@ async def get_last_synced_timestamp() -> Tuple[Optional[datetime], Optional[str]
 async def sync_batch_to_local_db(batch: List[MessageRecord]) -> int:
     async with aiosqlite.connect(LOCAL_DB_PATH) as conn:
         for msg in batch:
+            # Serialize attachments to JSON
+            attachments_json = None
+            if msg.attachments:
+                attachments_json = json.dumps([
+                    {
+                        "guid": a.guid,
+                        "mime_type": a.mime_type,
+                        "uti": a.uti,
+                        "filename": a.filename,
+                        "transfer_name": a.transfer_name,
+                        "is_sticker": a.is_sticker,
+                    }
+                    for a in msg.attachments
+                ])
+
             await conn.execute("""
                 INSERT INTO text_messages (
                     message_id, guid, text, timestamp, sender_id,
                     recipient_id, is_from_me, service, chat_identifier,
                     is_group_chat, group_chat_name, group_chat_participants,
                     has_attachments, is_read, read_timestamp, delivered_timestamp,
-                    reply_to_guid, thread_originator_guid
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    reply_to_guid, thread_originator_guid, is_audio_message, attachments
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(guid) DO UPDATE SET
                     text = excluded.text,
                     is_read = excluded.is_read,
@@ -68,7 +83,9 @@ async def sync_batch_to_local_db(batch: List[MessageRecord]) -> int:
                 msg.date_read.isoformat() if msg.date_read else None,
                 msg.date_delivered.isoformat() if msg.date_delivered else None,
                 msg.reply_to_guid,
-                msg.thread_originator_guid
+                msg.thread_originator_guid,
+                1 if msg.is_audio_message else 0,
+                attachments_json,
             ))
         await conn.commit()
     return len(batch)

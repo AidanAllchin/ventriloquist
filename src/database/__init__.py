@@ -31,6 +31,14 @@ from .training_data import (
     get_all_chat_ids,
     get_chat_metadata,
 )
+from .attachment_cache import (
+    get_cached_description,
+    get_cached_descriptions,
+    cache_description,
+    cache_descriptions_batch,
+    get_processing_stats,
+    clear_errors,
+)
 
 __all__ = [
     "init_local_database",
@@ -51,4 +59,10 @@ __all__ = [
     "get_training_messages_by_chat",
     "get_all_chat_ids",
     "get_chat_metadata",
+    "get_cached_description",
+    "get_cached_descriptions",
+    "cache_description",
+    "cache_descriptions_batch",
+    "get_processing_stats",
+    "clear_errors",
 ]
