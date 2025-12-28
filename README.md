@@ -6,13 +6,13 @@
 
 # Ventriloquist
 
-Personality modeling via iMessage fine-tuning. Train a completion model that predicts what specific people would say, capturing their tone, humor, and conversational patterns.
+Personality modeling via iMessage fine-tuning. Trains a completion model that predicts what specific people would say, capturing their tone, humor, and conversational patterns.
 
 ## Overview
 
-Ventriloquist fine-tunes Qwen3-8B-Base on your iMessage history using LoRA. The model learns to generate messages as any contact in your chat history, conditioned on conversational context.
+Ventriloquist fine-tunes Qwen3-8B-Base on iMessage texting history using LoRA. The model learns to generate messages as any contact in the chat history, conditioned on conversational context.
 
-**Key insight**: This is a completion model (not instruction-tuned). Identity is encoded via JSON structure—the `"name"` field determines who speaks next.
+**Key insight**: This is a completion model (not instruction-tuned). Identity is encoded via JSON pseudo-special-tokens – the `"name"` field determines who speaks next.
 
 ## Quick Start
 
@@ -33,19 +33,29 @@ The pipeline has 4 steps:
 | 2    | Preprocess data         | Any platform              |
 | 3    | Train model             | GPU recommended           |
 
-Run individually or all at once:
-
 ```bash
 uv run python main.py 1      # Collect
 uv run python main.py 1.5    # Process attachments (optional)
 uv run python main.py 2      # Preprocess
 uv run python main.py 3      # Train
-uv run python main.py a      # Run all
 ```
+
+### Contacts to IDs Mapping
+
+You must create and populate the `contacts_to_ids.jsonl` file. This contains entries as:
+
+```json
+{"contact": "your-contact-name", "ids": ["+12345678900", "me@icloud.com", ...]}
+...
+```
+
+This is required to map message ids to easily printable message sender names, and is used to aggregate messages from the same person across different IDs into a single thread (sometimes messages are sent or received from iCloud-enabled emails as well as phone numbers).
+
+Note that _your_ contact name and message ID **should not** go in this file. That will be handled by env variables.
 
 ## Cross-Platform Workflow
 
-iMessage collection and attachment processing require macOS. Training requires unsloth. Use a Linux/Windows machine with a GPU.
+iMessage collection and attachment processing require macOS. Training requires unsloth. Use a Linux/Windows machine with a GPU for step 3.
 
 **On macOS:**
 
@@ -82,7 +92,7 @@ Extracts messages from macOS iMessage database (`~/Library/Messages/chat.db`).
 
 ### Step 1.5: Attachment Processing (Optional)
 
-Generates descriptions for images, videos, and voice memos using Gemini 2.0 Flash.
+Generates descriptions for images, videos, and voice memos using Gemini 3.0 Flash.
 
 - **Images**: 1-3 sentence visual descriptions
 - **Videos**: Scene and action descriptions (first 15 seconds)
@@ -106,10 +116,10 @@ Transforms raw messages into training-ready format:
 **Training data format:**
 
 ```json
-{"type": "dm", "members": ["Aidan Allchin", "John"], "start": "2024-03-15"}
-{"name": "Aidan Allchin", "delta": "<1m", "reply_to": null, "content_type": "text", "text": "hey what's up"}
+{"type": "dm", "members": ["Aidan", "John"], "start": "2024-03-15"}
+{"name": "Aidan", "delta": "<1m", "reply_to": null, "content_type": "text", "text": "hey what's up"}
 {"name": "John", "delta": "<5m", "reply_to": null, "content_type": "image", "text": "A sunset photo over the ocean"}
-{"name": "Aidan Allchin", "delta": "<1m", "reply_to": "A sunset photo over the ocean", "content_type": "text", "text": "beautiful!"}
+{"name": "Aidan", "delta": "<1m", "reply_to": "A sunset photo over the ocean", "content_type": "text", "text": "beautiful!"}
 {"name": "John", "delta": "<1m", "reply_to": "beautiful!", "content_type": "reaction", "text": "Loved"}
 ```
 
@@ -125,17 +135,17 @@ Transforms raw messages into training-ready format:
 
 Fine-tunes using Unsloth for 2-5x speedup.
 
-| Setting             | Value                        |
-| ------------------- | ---------------------------- |
-| Base model          | `unsloth/Qwen3-8B-Base`      |
-| LoRA rank           | 128                          |
-| LoRA alpha          | 256                          |
-| Learning rate       | 2e-4                         |
-| Batch size          | 2 × 16 gradient accumulation |
-| Epochs              | 1                            |
-| Max sequence length | 4096                         |
+| Setting             | Value                       |
+| ------------------- | --------------------------- |
+| Base model          | `unsloth/Qwen3-8B-Base`     |
+| LoRA rank           | 128                         |
+| LoRA alpha          | 256                         |
+| Learning rate       | 2.5e-4                      |
+| Batch size          | 2x16 gradient accumulation  |
+| Epochs              | 2                           |
+| Max sequence length | 4096                        |
 
-**Loss masking:** Only the final message of each window contributes to loss. This ensures training matches inference—given full context, predict the next message.
+**Loss masking:** Only the final message of each window contributes to loss. This ensures training matches inference: given full context, predict the next message.
 
 **Output:** `checkpoints/ventriloquist/final/`
 
@@ -182,6 +192,7 @@ Commands:
 - `/target <name>` — Set who to generate for
 - `/members <name1> <name2>` — Set conversation participants
 - `/type <dm|group>` — Set chat type
+- `/debug` – Show exact prompt and response content
 - `/context` — Show conversation history
 - `/clear` — Clear conversation history
 - `/help` — Show help
@@ -193,7 +204,7 @@ Type messages as `<name>: <content>`:
 > John: hey, you free tonight?
 
   John <5m>: hey, you free tonight?
-  Aidan Allchin <5m>: yeah what's up
+  Aidan <5m>: yeah what's up
 ```
 
 ## Evaluation
@@ -230,17 +241,17 @@ Example output:
 
 ```
 ============================================================
-Chat: dm with ['Aidan Allchin', 'John']
+Chat: dm with ['Aidan', 'John']
 Context: 15 messages
 Last message: John: you around?
 ------------------------------------------------------------
-Target: Aidan Allchin
+Target: Aidan
 ------------------------------------------------------------
 EXPECTED [<5m>]: yeah what's up
 ------------------------------------------------------------
 FINETUNED [<5m>]: yeah I'm here, what's good
 ------------------------------------------------------------
-BASE [<1h>]: I am available for assistance. How may I help you today?
+BASE (no formatting): I am available for assistance. How may I help you today?
 ============================================================
 ```
 
@@ -249,7 +260,7 @@ BASE [<1h>]: I am available for assistance. How may I help you today?
 Create `.env` in project root:
 
 ```bash
-# Required
+# Required to populate your contact name
 MY_NAME="Your Name"
 
 # Optional
@@ -280,6 +291,7 @@ WANDB_API_KEY=your_key_here                  # Or run `wandb login`
 │       ├── config.py          # Hyperparameters
 │       └── data.py            # Dataset & loss masking
 ├── data/
+│   ├── contacts_to_ids.jsonl  # Contact names -> messaging IDs (user-made)
 │   ├── messages.db            # Local message database
 │   └── training_windows.jsonl # Training data
 └── checkpoints/               # Saved models
@@ -287,19 +299,19 @@ WANDB_API_KEY=your_key_here                  # Or run `wandb login`
 
 ## Design Decisions
 
-**Completion model, not instruct-tuned:** Identity is encoded in the data format (`"name"` field). A single LoRA learns your entire social graph—no per-contact adapters needed.
+**Completion model, not instruct-tuned:** Identity is encoded in the data format (`"name"` field). A single LoRA learns the entire social graph so no per-contact adapters are needed.
 
 **JSON as pseudo-special-tokens:** Field names (`"name":`, `"content":`, `"delta":`) provide unambiguous boundaries without custom tokenizer modifications.
 
-**Sliding windows with stride 1:** Every message becomes the prediction target of its own 100-message window. Maximum overlap reinforces consistent personality modeling.
+**Sliding windows with stride 1:** Every message becomes the prediction target of its own 50-message window. Maximum overlap reinforces consistent personality modeling.
 
 **Per-message time deltas:** The model learns response timing as a personality trait. Some contacts reply in seconds; others take days.
 
 ## Requirements
 
-- Python 3.12+
+- Python 3.11+
 - macOS for collection (iMessage access)
-- GPU with 24GB+ VRAM recommended for training
+- GPU with 24GB+ VRAM recommended for training (requires quantization)
 - ~10GB disk space for model weights
 
 ## Installation
