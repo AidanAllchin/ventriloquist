@@ -7,7 +7,7 @@ Also handles downsampling images to 768x768 and trimming audio/video.
 File: gemini/convert.py
 Author: Aidan Allchin
 Created: 2025-12-27
-Last Modified: 2025-12-27
+Last Modified: 2025-12-28
 """
 
 import io
@@ -94,14 +94,9 @@ def downsample_image(image_path: str, max_size: int = MAX_IMAGE_SIZE) -> Tuple[b
         return buffer.getvalue(), "image/jpeg"
 
 
-def convert_heic_to_jpeg(
-    heic_path: str, max_size: int = MAX_IMAGE_SIZE
-) -> Tuple[bytes, str]:
+def _convert_heic_with_ffmpeg(heic_path: str, max_size: int = MAX_IMAGE_SIZE) -> Tuple[bytes, str]:
     """
-    Convert HEIC image to JPEG bytes.
-
-    Handles both single images and HEIC sequences (Live Photos) by
-    extracting the first frame.
+    Convert HEIC/HEICS to JPEG using ffmpeg as fallback.
 
     Args:
         heic_path: Path to HEIC file
@@ -111,48 +106,107 @@ def convert_heic_to_jpeg(
         Tuple of (jpeg_bytes, "image/jpeg")
 
     Raises:
-        ImportError: If pillow-heif not installed
-        FileNotFoundError: If file doesn't exist
+        RuntimeError: If ffmpeg conversion fails
     """
-    if not _check_pillow_heif():
-        raise ImportError("pillow-heif required for HEIC conversion: pip install pillow-heif")
+    if not _check_ffmpeg():
+        raise RuntimeError("ffmpeg not available for HEIC conversion")
 
-    import pillow_heif
+    temp_file = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+    temp_path = temp_file.name
+    temp_file.close()
 
+    try:
+        # Extract first frame and convert to JPEG, scaling to max_size
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                heic_path,
+                "-vframes",
+                "1",  # Extract just the first frame
+                "-vf",
+                f"scale={max_size}:{max_size}:force_original_aspect_ratio=decrease",
+                "-q:v",
+                "2",  # High quality JPEG
+                temp_path,
+            ],
+            capture_output=True,
+            check=True,
+        )
+
+        # Read the result
+        jpeg_bytes = Path(temp_path).read_bytes()
+        return jpeg_bytes, "image/jpeg"
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"ffmpeg HEIC conversion failed: {e.stderr.decode()}")
+    finally:
+        Path(temp_path).unlink(missing_ok=True)
+
+
+def convert_heic_to_jpeg(
+    heic_path: str, max_size: int = MAX_IMAGE_SIZE
+) -> Tuple[bytes, str]:
+    """
+    Convert HEIC image to JPEG bytes.
+
+    Handles both single images and HEIC sequences (Live Photos) by
+    extracting the first frame. Uses pillow-heif primarily, with
+    ffmpeg as fallback for problematic files.
+
+    Args:
+        heic_path: Path to HEIC file
+        max_size: Maximum dimension for output
+
+    Returns:
+        Tuple of (jpeg_bytes, "image/jpeg")
+
+    Raises:
+        ImportError: If neither pillow-heif nor ffmpeg available
+        FileNotFoundError: If file doesn't exist
+        ValueError: If conversion fails
+    """
     path = Path(heic_path)
     if not path.exists():
         raise FileNotFoundError(f"HEIC file not found: {heic_path}")
 
-    # Use open_heif for sequences (Live Photos), fall back to read_heif for single images
+    # Try pillow-heif first
+    if _check_pillow_heif():
+        import pillow_heif
+
+        try:
+            # Use open_heif for sequences (Live Photos)
+            heif_file = pillow_heif.open_heif(str(path))
+            # For sequences, get first frame (the "hero" still image)
+            if len(heif_file) > 1:
+                frame = heif_file[0]
+                image = Image.frombytes(frame.mode, frame.size, frame.data)
+            else:
+                if not heif_file.data:
+                    raise ValueError("HEIC file data is empty")
+                image = Image.frombytes(heif_file.mode, heif_file.size, heif_file.data)
+
+            # Convert to RGB if needed
+            if image.mode != "RGB":
+                image = image.convert("RGB")
+
+            # Downsample
+            if image.width > max_size or image.height > max_size:
+                image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+
+            # Save to bytes
+            buffer = io.BytesIO()
+            image.save(buffer, format="JPEG", quality=85)
+            return buffer.getvalue(), "image/jpeg"
+
+        except Exception as e:
+            log.debug(f"pillow-heif failed for {heic_path}: {e}, trying ffmpeg")
+
+    # Fallback to ffmpeg
     try:
-        heif_file = pillow_heif.open_heif(str(path))
-        # For sequences, get first frame (the "hero" still image)
-        if len(heif_file) > 1:
-            frame = heif_file[0]
-            image = Image.frombytes(frame.mode, frame.size, frame.data)
-        else:
-            if not heif_file.data:
-                raise ValueError("HEIC file data is empty")
-            image = Image.frombytes(heif_file.mode, heif_file.size, heif_file.data)
-    except Exception:
-        # Fall back to read_heif for simple files
-        heif_file = pillow_heif.read_heif(str(path))
-        if not heif_file.data:
-            raise ValueError("HEIC file data is empty")
-        image = Image.frombytes(heif_file.mode, heif_file.size, heif_file.data)
-
-    # Convert to RGB if needed
-    if image.mode != "RGB":
-        image = image.convert("RGB")
-
-    # Downsample
-    if image.width > max_size or image.height > max_size:
-        image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
-
-    # Save to bytes
-    buffer = io.BytesIO()
-    image.save(buffer, format="JPEG", quality=85)
-    return buffer.getvalue(), "image/jpeg"
+        return _convert_heic_with_ffmpeg(heic_path, max_size)
+    except Exception as e:
+        raise ValueError(f"Failed to convert HEIC {heic_path}: {e}")
 
 
 def trim_video(video_path: str, max_seconds: int = MAX_VIDEO_SECONDS) -> Optional[str]:
@@ -355,7 +409,10 @@ def prepare_for_gemini(
             return img_bytes, out_mime, None
         except Exception as e:
             log.warning(f"Failed to process image {file_path}: {e}")
-            # Fall back to reading raw file
+            # For HEIC types, don't fall back - Gemini won't accept them
+            if mime_lower in ("image/heic", "image/heic-sequence", "image/heif"):
+                raise
+            # For other image types, try raw file (Gemini might accept)
             return path.read_bytes(), mime_type, None
 
     # Video: trim to 15 seconds
