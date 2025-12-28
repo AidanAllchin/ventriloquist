@@ -14,6 +14,10 @@ from typing import Dict, List, Optional, Set
 
 from dotenv import load_dotenv
 
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
 from ..database import (
     detect_user_identifiers_from_db,
     get_cached_descriptions,
@@ -24,6 +28,8 @@ from ..database import (
 from ..gemini.content_types import get_content_type
 from ..models import MessageRecord, TrainingMessage, CachedDescription
 from .utils import create_identifier_to_contact_map, load_contacts
+
+console = Console()
 
 log = logging.getLogger(__name__)
 
@@ -90,6 +96,13 @@ def format_reply_context(original_text: str, max_len: int = 50) -> Optional[str]
 
 
 # Reaction type codes from iMessage
+# Object replacement character - iMessage uses this as placeholder for inline attachments
+OBJECT_REPLACEMENT_CHAR = "\ufffc"
+
+# Pattern for iMessage plugin payload attachments (rich link previews, app content)
+# These are internal metadata with no semantic value - just UUIDs
+PLUGIN_ATTACHMENT_SUFFIX = ".pluginPayloadAttachment"
+
 REACTION_TYPES = {
     2000: "Loved",
     2001: "Liked",
@@ -223,6 +236,10 @@ def convert_message_to_training(
                 else:
                     content = "[NA]"
 
+            # Skip plugin payload attachments (rich link previews) - they're just UUIDs
+            if content.endswith(PLUGIN_ATTACHMENT_SUFFIX):
+                continue
+
             # First attachment carries reply context if this message is a reply
             results.append(
                 TrainingMessage(
@@ -239,23 +256,26 @@ def convert_message_to_training(
             )
             first_attachment = False
 
-    # Add text message if present
-    if msg.text and msg.text.strip():
-        # If we already added attachments with reply context, text doesn't repeat it
-        text_reply_to = reply_to if not results else None
-        results.append(
-            TrainingMessage(
-                chat_id=chat_id,
-                from_contact=from_contact,  # type: ignore
-                timestamp=timestamp,
-                content=msg.text,
-                content_type="text",
-                is_group_chat=is_group,
-                chat_members=chat_members,
-                reply_to_text=text_reply_to,
-                thread_originator_guid=reply_guid if text_reply_to else None,
+    # Add text message if present (filter out object replacement characters)
+    if msg.text:
+        # Remove object replacement characters (used as inline attachment placeholders)
+        clean_text = msg.text.replace(OBJECT_REPLACEMENT_CHAR, "").strip()
+        if clean_text:
+            # If we already added attachments with reply context, text doesn't repeat it
+            text_reply_to = reply_to if not results else None
+            results.append(
+                TrainingMessage(
+                    chat_id=chat_id,
+                    from_contact=from_contact,  # type: ignore
+                    timestamp=timestamp,
+                    content=clean_text,
+                    content_type="text",
+                    is_group_chat=is_group,
+                    chat_members=chat_members,
+                    reply_to_text=text_reply_to,
+                    thread_originator_guid=reply_guid if text_reply_to else None,
+                )
             )
-        )
 
     return results
 
@@ -281,14 +301,22 @@ def build_guid_to_content(
     for msg in messages:
         content = None
 
-        # Prefer text content
-        if msg.text and msg.text.strip():
-            content = msg.text.strip()
-        # Fall back to first attachment description
+        # Clean text of object replacement characters
+        clean_text = None
+        if msg.text:
+            clean_text = msg.text.replace(OBJECT_REPLACEMENT_CHAR, "").strip()
+
+        # Prefer clean text content
+        if clean_text:
+            content = clean_text
+        # Fall back to first attachment description (skip plugin attachments)
         elif msg.attachments:
             for att in msg.attachments:
                 cached = attachment_cache.get(att.guid)
                 if cached and cached.description:
+                    # Skip plugin payload attachments
+                    if cached.description.endswith(PLUGIN_ATTACHMENT_SUFFIX):
+                        continue
                     content = cached.description
                     break
 
@@ -472,9 +500,14 @@ async def make_training_messages(
     all_messages = individual_messages + group_messages
     all_messages.sort(key=lambda m: m.timestamp)
 
-    log.info(f"\nTraining data collection complete:")
-    log.info(f"  - {len(individual_messages)} individual messages")
-    log.info(f"  - {len(group_messages)} group chat messages")
-    log.info(f"  - {len(all_messages)} total messages")
+    # Rich summary output
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("Label", style="dim")
+    table.add_column("Count", style="bold cyan", justify="right")
+    table.add_row("Individual messages", f"{len(individual_messages):,}")
+    table.add_row("Group chat messages", f"{len(group_messages):,}")
+    table.add_row("Total messages", f"{len(all_messages):,}")
+
+    console.print(Panel(table, title="[bold green]Training Data Collection Complete", border_style="green"))
 
     return all_messages
