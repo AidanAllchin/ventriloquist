@@ -13,18 +13,21 @@ set -e  # Exit on error
 echo "=== GPU Training Rig Setup ==="
 
 # System updates
-echo "[1/6] Updating system packages..."
+echo "[1/7] Updating system packages..."
 sudo apt update && sudo apt upgrade -y
 
 # Build tools and monitoring
-echo "[2/6] Installing build tools..."
+echo "[2/7] Installing build tools..."
 sudo apt install -y cmake libncurses5-dev libncursesw5-dev git
 
-echo "[3/6] Installing nvtop for GPU monitoring..."
+echo "[3/7] Installing nvtop for GPU monitoring..."
 sudo apt install -y nvtop
 
+echo "[4/7] Installing screen for decoupled running..."
+sudo apt install -y screen
+
 # Install uv if not present
-echo "[4/6] Setting up uv..."
+echo "[5/7] Setting up uv..."
 if ! command -v uv &> /dev/null; then
     echo "Installing uv..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -32,12 +35,12 @@ if ! command -v uv &> /dev/null; then
 fi
 
 # Sync Python dependencies
-echo "[5/6] Syncing Python dependencies..."
+echo "[6/7] Syncing Python dependencies..."
 cd /workspace/ventriloquist
 uv sync
 
 # Optional: wandb login reminder
-echo "[6/6] Final setup..."
+echo "[7/7] Final setup..."
 if [ -z "$WANDB_API_KEY" ]; then
     echo ""
     echo "NOTE: WANDB_API_KEY not set. Run one of:"
