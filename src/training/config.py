@@ -4,7 +4,7 @@ Training configuration for Ventriloquist.
 File: training/config.py
 Author: Aidan Allchin
 Created: 2025-12-24
-Last Modified: 2025-12-26
+Last Modified: 2025-12-28
 """
 
 from dataclasses import dataclass, field
@@ -35,6 +35,7 @@ class TrainingConfig:
     # Training
     learning_rate: float = 2e-4
     batch_size: int = 4
+    eval_batch_size: int = 1  # Must be small: eval returns full logits (~2.4GB per sample)
     gradient_accumulation_steps: int = 16
     num_epochs: int = 1
     warmup_ratio: float = 0.03
@@ -84,6 +85,7 @@ class TrainingConfig:
             "target_modules": self.target_modules,
             "learning_rate": self.learning_rate,
             "batch_size": self.batch_size,
+            "eval_batch_size": self.eval_batch_size,
             "gradient_accumulation_steps": self.gradient_accumulation_steps,
             "effective_batch_size": self.effective_batch_size,
             "num_epochs": self.num_epochs,

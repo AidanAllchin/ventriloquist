@@ -172,6 +172,29 @@ uv run python -m src.training.train --load_in_8bit  # ~8GB VRAM
 uv run python -m src.training.train --load_in_4bit  # ~4GB VRAM
 ```
 
+## Training Monitor
+
+> **Note:** This script is provided as an example of automated run monitoring with Claude Code. The phone notification feature uses custom MCP tooling (`send_message_to_device`) that is not included. You'll need to adapt the alerting mechanism for your own setup (e.g., Slack webhook, email, SMS API).
+
+Automated monitoring script that checks W&B for training issues and alerts via Claude Code.
+
+```bash
+# One-shot check
+uv run python scripts/monitor_training.py
+
+# Daemon mode (checks every 30 mins)
+uv run python scripts/monitor_training.py --daemon
+
+# Via cron
+*/30 * * * * cd ~/ventriloquist && uv run python scripts/monitor_training.py >> /tmp/training_monitor.log 2>&1
+```
+
+**Checks for:** crashed/failed state, stale heartbeat (>15 min), loss NaN, loss explosion (>2.0)
+
+**On failure:** Invokes Claude Code with `--dangerously-skip-permissions` to query W&B, create an incident report at `docs/incident_report_*.md`, and optionally send a notification.
+
+Requires `WANDB_ENTITY` in `.env` (see Environment Setup).
+
 ## Inference
 
 ```bash
@@ -267,6 +290,7 @@ MY_NAME="Your Name"
 USER_IDENTIFIERS=+1234567890,you@email.com  # Auto-detected if not set
 GEMINI_API_KEY=your_key_here                 # For attachment processing (step 1.5)
 WANDB_API_KEY=your_key_here                  # Or run `wandb login`
+WANDB_ENTITY=your-wandb-username             # For training monitor script
 ```
 
 ## Project Structure

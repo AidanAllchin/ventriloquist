@@ -16,6 +16,7 @@ Last Modified: 2025-12-28
 import argparse
 import logging
 from datetime import datetime
+from pathlib import Path
 
 # Unsloth MUST be imported before transformers, peft, trl to apply optimizations
 # See: https://github.com/unslothai/unsloth#installation
@@ -80,8 +81,10 @@ def parse_args() -> TrainingConfig:
     parser.add_argument("--output_dir", type=str, default=None)
     parser.add_argument("--limit", type=int, default=None, help="Limit total windows for testing")
 
-    # Logging
+    # Logging & checkpoints
     parser.add_argument("--run_name", type=str, default=None)
+    parser.add_argument("--save_steps", type=int, default=None)
+    parser.add_argument("--eval_steps", type=int, default=None)
     parser.add_argument("--no_wandb", action="store_true")
     parser.add_argument("--resume", action="store_true", help="Resume from latest checkpoint")
     parser.add_argument("--continue_from", type=str, default=None,
@@ -96,6 +99,12 @@ def parse_args() -> TrainingConfig:
     for key, value in vars(args).items():
         if value is not None and hasattr(config, key):
             setattr(config, key, value)
+
+    # Ensure Path types after CLI overrides (since __post_init__ ran before overrides)
+    if isinstance(config.output_dir, str):
+        config.output_dir = Path(config.output_dir)
+    if isinstance(config.data_path, str):
+        config.data_path = Path(config.data_path)
 
     if args.no_wandb:
         config.report_to = "none"
@@ -247,7 +256,7 @@ def main():
         run_name=config.run_name,
         # Batch
         per_device_train_batch_size=config.batch_size,
-        per_device_eval_batch_size=config.batch_size,
+        per_device_eval_batch_size=config.eval_batch_size,
         gradient_accumulation_steps=config.gradient_accumulation_steps,
         # Epochs
         num_train_epochs=config.num_epochs,
@@ -267,6 +276,7 @@ def main():
         # Evaluation
         eval_strategy="steps",
         eval_steps=config.eval_steps,
+        prediction_loss_only=True,  # Only compute loss, don't return massive logits tensor
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
