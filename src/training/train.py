@@ -70,6 +70,7 @@ def parse_args() -> TrainingConfig:
 
     # Training
     parser.add_argument("--learning_rate", type=float, default=None)
+    parser.add_argument("--warmup_ratio", type=float, default=None)
     parser.add_argument("--batch_size", type=int, default=None)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=None)
     parser.add_argument("--num_epochs", type=int, default=None)
@@ -98,6 +99,11 @@ def parse_args() -> TrainingConfig:
 
     if args.no_wandb:
         config.report_to = "none"
+
+    # Skip warmup for continued training (model already warmed up)
+    if args.continue_from and args.warmup_ratio is None:
+        config.warmup_ratio = 0.0
+        log.info("Auto-setting warmup_ratio=0 for continued training")
 
     # Generate run name if not provided
     if config.run_name is None:
