@@ -10,12 +10,19 @@ Usage:
 File: training/train.py
 Author: Aidan Allchin
 Created: 2025-12-24
-Last Modified: 2025-12-26
+Last Modified: 2025-12-28
 """
 
 import argparse
 import logging
 from datetime import datetime
+
+# Unsloth MUST be imported before transformers, peft, trl to apply optimizations
+# See: https://github.com/unslothai/unsloth#installation
+try:
+    import unsloth  # type: ignore
+except ImportError:
+    pass  # Training extras not installed
 
 import wandb
 from transformers import TrainingArguments, TrainerCallback
@@ -174,6 +181,7 @@ def main():
     if config.continue_from:
         # Continue training from a saved adapter
         from unsloth import FastLanguageModel  # type: ignore
+
         log.info(f"Continuing training from: {config.continue_from}")
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=config.continue_from,
@@ -185,7 +193,6 @@ def main():
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
             tokenizer.pad_token_id = tokenizer.eos_token_id
-        # LoRA is already in the loaded model, just enable gradient checkpointing
         FastLanguageModel.for_training(model)
     else:
         # Fresh training from base model
